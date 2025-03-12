@@ -4,7 +4,10 @@ This component allows you to mount an SD Card into the firmware as part of the f
 
 ## Configuration
 
+
+
 ```yaml
+# Example configuration entry
 external_components:
   - source: github://mnark/esphome-components
     components: [sdmmc]
@@ -17,13 +20,19 @@ sdmmc:
   data_pin: GPIO02
 ```
 
+## Configuration variables: 
+
+* **command_pin** (Required, GPIO pin): Pin used for the command signal.
+* **clock_pin** (Required, GPIO pin): Pin used for the clock signal.
+* **data_pin** (Required, GPIO pin): Pin used for the data signal. (Currently this component only supports 1-wire mode)
+
 ## Use
 
 ### Directly in Yaml
 
 The component will be typically be used by other components to access the SDCard.
 
-There is one action available directly in yaml and this will save a binary source directly to the card, e.g. when used with the esp32_camera component, a button could be configured to save an image directly to the SD card.
+There is one action available directly from a yaml and this will save a binary source directly to the card, e.g. when used with the esp32_camera component, a button could be configured to save an image directly to the SD card.
 
 #### Example
 

@@ -144,8 +144,6 @@ void SDMMC::set_data_pins(std::array<int, 4> pins) {
 
 void SDMMC::set_mount_point(std::string mount_point){
   mount_point_ = "/" + mount_point;
-  //sprintf(mount_point_.c_str(), "/%s", mount_point);
-  ESP_LOGI(TAG,"Mount point is %s",mount_point_.c_str() );
 }
 
 std::string  SDMMC::get_mount_point(void) {

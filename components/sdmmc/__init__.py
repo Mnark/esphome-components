@@ -71,8 +71,6 @@ async def to_code(config):
         if key in config:
             cg.add(getattr(var, setter)(config[key]))
     
-    print (config)
-    print (config["id"])
     cg.add(var.set_mount_point(config[CONF_MOUNT_POINT]))
   
     cg.add_define("USE_SDMMC")
