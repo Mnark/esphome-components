@@ -57,9 +57,9 @@ esp32_camera:
   on_image:
     then:
       - lambda: |-
-        if (id(save_to_disk)){
-          id(sdcard1).save(id(filename), image.length, image.data)
-        } 
+          if (id(save_to_disk)){
+            id(sdcard1).save(id(filename), image.length, image.data)
+          } 
 
 sdmmc:
   id: sdcard1
