@@ -24,7 +24,7 @@ sdmmc:
 
 * **command_pin** (Required, GPIO pin): Pin used for the command signal.
 * **clock_pin** (Required, GPIO pin): Pin used for the clock signal.
-* **data_pin** (Required, GPIO pin): Pin used for the data signal. (Currently this component only supports 1-wire mode)
+* **data_pin** (Required, GPIO pin): Pin(s) used for the data signal. If opperating in 1 bit mode then a single GPIO pin should be specified. If operating in 4-bit mode, an array of 4 GPIO pins should be specified e.g. [GPIO13,GPIO12,GPIO04,GPIO02] **N.B. The ESP32-CAM board shares GPIO04 with the SD Card. This means the board will flash activate whenever the card is read or written to!!!**
 
 ## Use
 

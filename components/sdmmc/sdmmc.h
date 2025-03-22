@@ -17,6 +17,127 @@
 #include "driver/sdmmc_types.h"
 #include "driver/gpio.h"
 #include "hal/gpio_types.h"
+#include "ff.h"
+
+typedef struct {
+char fourcc [4];
+} FOURCC;
+
+typedef struct tagRECT {
+  uint16_t left;
+  uint16_t top;
+  uint16_t right;
+  uint16_t bottom;
+} RECT, *PRECT, *NPRECT, *LPRECT;
+
+typedef  struct {
+    FOURCC dwChunkId;
+    DWORD dwFlags;
+    DWORD dwOffset;
+    DWORD dwSize;
+  } _avioldindex_entry;
+
+typedef struct _avioldindex {
+  FOURCC             fcc;
+  DWORD              cb;
+} AVIOLDINDEX;
+
+typedef struct {
+  FOURCC fccType;
+  FOURCC fccHandler;
+  DWORD  dwFlags;
+  WORD   wPriority;
+  WORD   wLanguage;
+  DWORD  dwInitialFrames;
+  DWORD  dwScale;
+  DWORD  dwRate;
+  DWORD  dwStart;
+  DWORD  dwLength;
+  DWORD  dwSuggestedBufferSize;
+  DWORD  dwQuality;
+  DWORD  dwSampleSize;
+  RECT   rcFrame;
+} AVIStreamHeader;
+
+typedef struct tagBITMAPINFOHEADER {
+  DWORD biSize;
+  long  biWidth;
+  long  biHeight;
+  WORD  biPlanes;
+  WORD  biBitCount;
+  FOURCC biCompression;
+  DWORD biSizeImage;
+  long  biXPelsPerMeter;
+  long  biYPelsPerMeter;
+  DWORD biClrUsed;
+  DWORD biClrImportant;
+} BITMAPINFOHEADER, *LPBITMAPINFOHEADER, *PBITMAPINFOHEADER;
+
+typedef struct {
+  DWORD dwRIFF;
+  DWORD dwFileSize;
+  DWORD daAVI;
+  FOURCC fccList;
+  DWORD dwSize;
+  FOURCC fccHdrl;
+  DWORD dwAvih;
+  DWORD dwAvihSize;
+  DWORD dwMicroSecPerFrame;
+  DWORD dwMaxBytesPerSec;
+  DWORD dwPaddingGranularity;
+
+  DWORD dwFlags;
+  DWORD dwTotalFrames;
+  DWORD dwInitialFrames;
+  DWORD dwStreams;
+  DWORD dwSuggestedBufferSize;
+
+  DWORD dwWidth;
+  DWORD dwHeight;
+
+  DWORD dwReserved[4];
+  FOURCC dwStrlList;
+  DWORD dwStrlSize;
+  FOURCC dwStrl;
+  
+  FOURCC fccStrh;
+  DWORD dwStrhSize;
+  AVIStreamHeader dwStrh;
+
+  FOURCC fccStrf;
+  DWORD dwStrfSize;
+  BITMAPINFOHEADER dwStrf;
+
+  DWORD dwMoviList;
+  DWORD dwMoviSize;
+} AVIHeader;
+
+typedef struct {
+  DWORD dwFourCC;
+  DWORD dwMoviType;
+  DWORD dwSize;
+} MOVIHeader;
+
+typedef
+struct {
+  std::string key;
+  std::string filename;
+  bool initialised = false;
+  int size;
+  int frame_count;
+  int width;
+  int height;
+  int chunksize;
+  int64_t start;
+  AVIHeader header;
+  AVIOLDINDEX index;
+  std::vector<_avioldindex_entry> entries;
+  FILE *handle;
+  QueueHandle_t queue = NULL;
+  int buffer_len;
+  void * buffer;
+  TaskHandle_t task;
+}current_file_t;
 
 namespace esphome {
 namespace sdmmc {
@@ -38,13 +159,13 @@ class SDMMC : public Component, public EntityBase  { // ,
   void set_command_pin(int pin);
   void set_clock_pin(int pin);
   void set_data_pin(int pin);
-  void set_data_pins(std::array<int, 4> pins);
+  void set_data_pins(int pin1, int pin2, int pin3, int pin4);
   void set_mount_point(std::string);
   std::string get_mount_point(void);
   State get_state(void);
-  esp_err_t get_stat(const char *_uri, struct stat * status);
   esp_err_t write_file(const char *path, uint32_t len, void *data);
   esp_err_t write_file(const char *path, uint32_t len, std::vector<uint8_t> &data);
+  esp_err_t write_avi(const char *path, uint32_t len, void *data);
   uint64_t get_total_capacity(void);
   uint64_t get_used_capacity(void);
   uint64_t get_free_capacity(void);
@@ -53,16 +174,19 @@ class SDMMC : public Component, public EntityBase  { // ,
 
  protected:
   void set_state_(State state);
+  esp_err_t initialise_avi_process(const char *fullpath, uint32_t len, void *data );
+
   sdmmc_card_t *card;
   gpio_num_t command_pin;
   gpio_num_t clock_pin;
   gpio_num_t data_pins[4];
+  int num_data_pins_;
   std::string mount_point_;
   State state_{State::UNKNOWN};
 };
 
 template<typename... Ts> class SDMMCWriteAction : public Action<Ts...> {
- public:
+  public:
   SDMMCWriteAction(SDMMC *sdmmc) : sdmmc_(sdmmc) {}
   
   TEMPLATABLE_VALUE(uint32_t, length)
@@ -85,6 +209,44 @@ template<typename... Ts> class SDMMCWriteAction : public Action<Ts...> {
     } else {
       auto val = this->data_func_int_(x...);
       this->sdmmc_->write_file(this->path_, this->length_.value(x...), val);
+      }
+  }
+
+  protected:
+  SDMMC *sdmmc_;
+
+  const char *path_;
+  bool static_{false};
+  std::function<uint8_t*(Ts...)> data_func_int_{};
+  std::vector<uint8_t> data_static_{};
+};
+
+template<typename... Ts> class SDMMCAppendAction : public Action<Ts...> {
+ public:
+  SDMMCAppendAction(SDMMC *sdmmc) : sdmmc_(sdmmc) {}
+  
+  TEMPLATABLE_VALUE(uint32_t, length)
+  TEMPLATABLE_VALUE(std::string, filename)
+
+  void set_data_static(const std::vector<uint8_t> &data) {
+    this->data_static_ = data;
+    this->static_ = true;
+  }
+
+  void set_data_template_int(const std::function<uint8_t*(Ts...)> func) {
+    this->data_func_int_ = func;
+    this->static_ = false;
+  }
+
+  void play(Ts... x) override {
+    this->path_ = this->filename_.value(x...).c_str();
+    if (this->static_) {
+      ESP_LOGI("TEMP", "this is static");
+      this->sdmmc_->write_avi(this->path_, this->length_.value(x...), this->data_static_);
+    } else {
+      ESP_LOGI("TEMP", "this is NOT static");
+      auto val = this->data_func_int_(x...);
+      this->sdmmc_->write_avi(this->path_, this->length_.value(x...), val);
       }
   }
 
