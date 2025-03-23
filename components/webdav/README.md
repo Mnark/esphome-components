@@ -34,7 +34,7 @@ webdav:
 * **auth** (Optional, Default BASIC): The authentication method applied. Can be either BASIC (user/password required) or NONE.
 * **user** (Required if auth is BASIC)
 * **password** (Required if auth is BASIC)
-* **enable_web** (Optional, Default True): Enable in built web site hosting.
+* **enable_web** (Optional, Default False): Enable in built web site hosting. ** Still under development
 * **web_directory** (Optional, Default www): Specify the directory on the SD card that contains the web pages.
 * **home_page** (Optional): Enable the camera for the website.
 

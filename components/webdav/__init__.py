@@ -35,7 +35,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_AUTH, default="NONE"): cv.enum(
             ENUM_AUTHENTICATION, upper=True
         ),
-        cv.Optional(CONF_WEB_ENABLED, default=True): cv.boolean,
+        cv.Optional(CONF_WEB_ENABLED, default=False): cv.boolean,
         cv.Optional(CONF_WEB_DIR, default="www"): cv.string,        
         cv.Optional(CONF_HOME_PAGE, default="default.htm"): cv.string,
         cv.Optional(CONF_SHARE_NAME, default="share"): cv.string,
