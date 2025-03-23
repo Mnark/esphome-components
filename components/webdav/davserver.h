@@ -3,11 +3,13 @@
 #include "request.h"
 #include "response.h"
 #include "../sdmmc/sdmmc.h"
+#include "tinyxml2.h"
 
 #include "webdav.h"
 
 namespace esphome {
 namespace webdav {
+using namespace tinyxml2;
 //class WebDav;
 
 class DavServer {
@@ -34,6 +36,7 @@ public:
         int doUnlock(Request &req, Response &resp);
         void setAuth(int auth_level);
         std::string get_auth_credentials();
+        //XMLDocument respXML;
         int auth = 0;
 
 private:
@@ -43,10 +46,13 @@ private:
         std::string formatTimeTxt(time_t t);
         std::string formatTimeETag(time_t t);
         int sendPropResponse(Response &resp, std::string path, int recurse);
+        int xmlPropResponse(XMLDocument *respXML, XMLElement *oRoot, std::string path, int recurse);
+        
         int sendRootPropResponse(Response &resp);
-        void sendMultiStatusResponse(Response &resp, MultiStatusResponse &msr);
+        //void sendMultiStatusResponse(Response &resp, MultiStatusResponse &msr);
         sdmmc::SDMMC *sdmmc_;
         webdav::WebDav *webdav_;
+        
         
 };
 

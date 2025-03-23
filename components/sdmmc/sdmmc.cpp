@@ -209,6 +209,50 @@ std::string  SDMMC::get_mount_point(void) {
   return mount_point_;
 }
 
+esp_err_t SDMMC::path_to_uri(const char *path, char *uri, bool create_dir){
+  char temp[64];
+  char * pch;
+  
+  strcpy(temp, path);
+
+  strcpy(uri, mount_point_.c_str());
+  if (strncmp(temp, "/", 1) != 0) {
+    strcat(uri, "/");
+  }
+
+  pch = strtok (temp,"/");
+  while (pch != NULL)
+  {
+    if (strcmp(pch, mount_point_.c_str()) == 0){
+      strcat(uri, "/");
+    } else {
+      if (strncmp(path, pch, strlen(pch)) == 0){
+        DIR* dir = opendir(uri);
+        if (dir) {
+          strcat(uri, pch);
+          strcat(uri, "/");
+          closedir(dir);
+        } else if (ENOENT == errno) {
+          if (create_dir){
+            strcat(uri, pch);
+            mkdir(uri, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+            strcat(uri, "/");
+          }else{
+            return ESP_FAIL;
+          }  
+        } else {
+            /* opendir() failed for some other reason. */
+            return ESP_FAIL;
+        }
+      }else{
+        strcat(uri, pch);
+      }
+    }
+    pch = strtok (NULL, "/");
+  }
+  return ESP_OK;
+}
+
 static void write_file_async(void *arg){
   write_file_args_t *args = (write_file_args_t *)arg;
 
@@ -294,7 +338,7 @@ static void avi_process(void *arg){
     .dwStrhSize = sizeof(AVIStreamHeader),
     .dwStrh = {
       .fccType ={'v','i','d','s'},
-      .fccHandler = {'m','j','p','g'},
+      .fccHandler = {'M','J','P','G'},
       .dwScale = 100000,
       .dwRate = 1000000, 
       .dwQuality = 10000,
@@ -302,6 +346,7 @@ static void avi_process(void *arg){
     .fccStrf = {'s','t','r','f'},
     .dwStrfSize = sizeof(BITMAPINFOHEADER),
     .dwStrf = {
+      .biSize = 40,
       .biPlanes = 1,
       .biBitCount = 24,
       .biCompression = {'M','J','P','G'},
@@ -332,7 +377,7 @@ static void avi_process(void *arg){
         current_file->header.dwStrh.rcFrame = {0, 0, width, height};
         current_file->header.dwStrf.biWidth = width;
         current_file->header.dwStrf.biHeight = height;
-        current_file->header.dwStrf.biSizeImage = (uint32_t)width * height;
+        current_file->header.dwStrf.biSizeImage = (uint32_t)width * height * current_file->header.dwStrf.biBitCount / 8;
       }
       int pad = 4 - (current_image.length % 4);
       MOVIHeader movi = {1769369453, 1667510320, current_image.length + pad + 4};
@@ -367,35 +412,39 @@ static void avi_process(void *arg){
 esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
   char *fullpath = new char[64];
   bool save_sync = false;
-  strcpy(fullpath, mount_point_.c_str());
-  if (strncmp(path, "/", 1) != 0) {
-    strcat(fullpath, "/");
+  
+  esp_err_t err= path_to_uri(path, fullpath, true);
+  if (err != ESP_OK){
+    return err;
   }
-  strcat(fullpath, path);
   
-  uint32_t* mem_image = (uint32_t*) malloc(len);
-  
-  if (mem_image == NULL){
-    ESP_LOGW(TAG, "Failed to allocate memory for image. Saving Synchronusly");
-    save_sync = true;
-  } else {
-    memcpy(mem_image, data, len);
-
-    args = {
-      .fullpath = fullpath,
-      .len = len,
-      .data = mem_image
-    };
-
-    BaseType_t xReturned = xTaskCreate( write_file_async, "write_file_async", 2048, (void *)&args, tskIDLE_PRIORITY + 1, NULL );
-    if (xReturned != pdPASS){
-      ESP_LOGW(TAG, "Failed to create async task. Saving Synchronusly");
-      free(mem_image);
+  if (!save_sync){
+    uint32_t* mem_image = (uint32_t*) malloc(len);
+    
+    if (mem_image == NULL){
+      ESP_LOGW(TAG, "Failed to allocate memory for image. Saving Synchronusly");
       save_sync = true;
+    } else {
+      memcpy(mem_image, data, len);
+
+      args = {
+        .fullpath = fullpath,
+        .len = len,
+        .data = mem_image
+      };
+
+      BaseType_t xReturned = xTaskCreate( write_file_async, "write_file_async", 2048, (void *)&args, tskIDLE_PRIORITY + 1, NULL );
+      if (xReturned != pdPASS){
+        ESP_LOGW(TAG, "Failed to create async task. Saving Synchronusly");
+        free(mem_image);
+        save_sync = true;
+      }
     }
   }
+
   
   if (save_sync){
+    uint64_t start = esp_timer_get_time();
     FILE *f = fopen(fullpath, "wb");
     if (f == NULL) {
       ESP_LOGE(TAG, "Failed to open file %s for writing", path);
@@ -404,7 +453,8 @@ esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
     fwrite(data, len, 1, f);
     uint8_t *imagedata = (uint8_t *) data;
     fclose(f);
-    ESP_LOGI(TAG, "File %s saved", fullpath);
+    uint64_t end = esp_timer_get_time();
+    ESP_LOGI(TAG, "File %s saved. Time: %llu", fullpath, end - start);
   }
 
   return ESP_OK;
@@ -422,13 +472,16 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
   struct stat st = {};
   char *fullpath = new char[64];
   current_file_t current_file;
-  ESP_LOGI(TAG, "Initialising File %s", path);
-  strcpy(fullpath, mount_point_.c_str());
-  if (strncmp(path, "/", 1) != 0) {
-    strcat(fullpath, "/");
+  // ESP_LOGI(TAG, "Initialising File %s", path);
+  // strcpy(fullpath, mount_point_.c_str());
+  // if (strncmp(path, "/", 1) != 0) {
+  //   strcat(fullpath, "/");
+  // }
+  // strcat(fullpath, path);
+  esp_err_t err= path_to_uri(path, fullpath, true);
+  if (err != ESP_OK){
+    return err;
   }
-  strcat(fullpath, path);
-
   int ret = stat(fullpath, &st);
   if (ret == 0){
 

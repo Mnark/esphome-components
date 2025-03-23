@@ -162,6 +162,7 @@ class SDMMC : public Component, public EntityBase  { // ,
   void set_data_pins(int pin1, int pin2, int pin3, int pin4);
   void set_mount_point(std::string);
   std::string get_mount_point(void);
+  esp_err_t path_to_uri(const char *, char *, bool);
   State get_state(void);
   esp_err_t write_file(const char *path, uint32_t len, void *data);
   esp_err_t write_file(const char *path, uint32_t len, std::vector<uint8_t> &data);

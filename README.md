@@ -1,5 +1,5 @@
 # esphome-components
 
-* **sdmmc**
+* **[sdmmc](/components/sdmmc/README.md)** Component for SD Card access.
 
-* **webdav**
+* **[webdav](/components/webdav/README.md)** Provides WebDav access to an SD Card.

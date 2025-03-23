@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <cctype>
 #include <iomanip>
+#include <ctime>
 //#include "esp_netif.h"
 #include <esp_http_server.h>
 
@@ -15,16 +16,18 @@
 #include "davserver.h"
 #include "esp_log.h"
 #include "tinyxml2.h"
-#include "tiny-json.h"
+//#include "tiny-json.h"
 
 #include "request-espidf.h"
 #include "response-espidf.h"
+#include "esphome/components/esp32_camera/esp32_camera.h"
 
 static const char *TAG = "webdav SERVER";
 
 namespace esphome {
 //namespace webdav {
 using namespace webdav;
+using namespace tinyxml2;
 // DavServer::DavServer(std::string rootPath, std::string rootURI, webdav::WebDav *webdav) :
 //         rootPath(rootPath), rootURI(rootURI) {
 //         this->webdav_ = webdav;
@@ -41,27 +44,34 @@ DavServer::DavServer(webdav::WebDav *webdav)
 #define IS_FILE_EXT(filename, ext) \
     (strcasecmp(&filename[strlen(filename) - sizeof(ext) + 1], ext) == 0)
 
-static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filename){
-        if (IS_FILE_EXT(filename, ".pdf"))
-        {
-        return httpd_resp_set_type(req, "application/pdf");
-        }
-        else if (IS_FILE_EXT(filename, ".html")|| IS_FILE_EXT(filename, ".htm"))
-        {
-        return httpd_resp_set_type(req, "text/html");
-        }
-        else if (IS_FILE_EXT(filename, ".jpeg") || IS_FILE_EXT(filename, ".jpg"))
-        {
-        return httpd_resp_set_type(req, "image/jpeg");
-        }
-        else if (IS_FILE_EXT(filename, ".ico"))
-        {
-        return httpd_resp_set_type(req, "image/x-icon");
-        }
-        /* This is a limited set only */
-        /* For any other type always set as plain text */
-        return httpd_resp_set_type(req, "text/plain");
-        }
+// static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filename){
+//         if (IS_FILE_EXT(filename, ".pdf"))
+//         {
+//         return httpd_resp_set_type(req, "application/pdf");
+//         }
+//         else if (IS_FILE_EXT(filename, ".html")|| IS_FILE_EXT(filename, ".htm"))
+//         {
+//         return httpd_resp_set_type(req, "text/html");
+//         }
+//         else if (IS_FILE_EXT(filename, ".jpeg") || IS_FILE_EXT(filename, ".jpg"))
+//         {
+//         return httpd_resp_set_type(req, "image/jpeg");
+//         }
+//         else if (IS_FILE_EXT(filename, ".ico"))
+//         {
+//         return httpd_resp_set_type(req, "image/x-icon");
+//         }
+//         else if (IS_FILE_EXT(filename, ".png"))
+//         {
+//         return httpd_resp_set_type(req, "image/png");
+//         }
+
+        
+//         /* This is a limited set only */
+//         /* For any other type always set as plain text */
+//         return httpd_resp_set_type(req, "text/plain");
+// }
+
 /* Set HTTP response content type according to file extension */
 static const char* get_content_type_from_file(const char *filename)
 {
@@ -75,6 +85,8 @@ static const char* get_content_type_from_file(const char *filename)
                 return "image/x-icon";
         } else if (IS_FILE_EXT(filename, ".txt")) {
                 return "text/plain";
+        } else if (IS_FILE_EXT(filename, ".avi")) {
+                return "video/AV1";
         }
         return "application/binary";
 }
@@ -126,11 +138,11 @@ static std::string urlEncode(const std::string &value) {
 
 static esp_err_t send_unauthorized_response(httpd_req_t *req)
 {
-    httpd_resp_set_status(req, "401 Unauthorized");
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"ESPHome Web Server\"");
-    httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
-    return ESP_FAIL;
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"ESPHome Web Server\"");
+        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
 }
 
 esp_err_t webdav_handler(httpd_req_t *httpd_req)
@@ -230,382 +242,22 @@ esp_err_t webdav_handler(httpd_req_t *httpd_req)
     if (ret == 404){
         resp.setStatus(ret, "Not Found");
     } else {
-        resp.setStatus(ret, "");
+        if (ret == 304) {
+                resp.setStatus(ret, "Not Modified");
+        }else{
+                resp.setStatus(ret, "");
+        }
     }
     //resp.writeHeader("Connection", "close");
     resp.flushHeaders();
     resp.closeBody();
     //httpd_resp_set_hdr(req, "Connection", "close");
     
-    if (ret < 300)
+    if (ret < 300 || ret == 304 || ret == 404)
     {
         return ESP_OK;
     } 
     return ret;
-}
-
-esp_err_t web_handler(struct httpd_req *req)
-{
-    webdav::WebDav *server = (webdav::WebDav *)req->user_ctx;
-    std::string path;
-    if (strcmp(req->uri, "/") == 0){
-        path = server->get_mount_point() + "/" + server->get_web_directory() + "/" + server->get_home_page();
-    }else{
-        path = server->get_mount_point() + "/" + server->get_web_directory() + "/" + req->uri;
-    }
-
-    ESP_LOGD(TAG, "Web Handler uri: %s path: %s", req->uri, path.c_str());
-// #ifdef WEBDAV_ENABLE_CAMERA
-//     if (strcmp(req->uri, "/status") == 0){
-//         //char status_json [] = "{}";
-//         static char json_response[1024];
-
-//         sensor_t *s = esp_camera_sensor_get();
-//         char *p = json_response;
-//         *p++ = '{';
-
-//         // if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
-//         //     for (int reg = 0x3400; reg < 0x3406; reg += 2) {
-//         //     p += print_reg(p, s, reg, 0xFFF);  //12 bit
-//         //     }
-//         //     p += print_reg(p, s, 0x3406, 0xFF);
-
-//         //     p += print_reg(p, s, 0x3500, 0xFFFF0);  //16 bit
-//         //     p += print_reg(p, s, 0x3503, 0xFF);
-//         //     p += print_reg(p, s, 0x350a, 0x3FF);   //10 bit
-//         //     p += print_reg(p, s, 0x350c, 0xFFFF);  //16 bit
-
-//         //     for (int reg = 0x5480; reg <= 0x5490; reg++) {
-//         //     p += print_reg(p, s, reg, 0xFF);
-//         //     }
-
-//         //     for (int reg = 0x5380; reg <= 0x538b; reg++) {
-//         //     p += print_reg(p, s, reg, 0xFF);
-//         //     }
-
-//         //     for (int reg = 0x5580; reg < 0x558a; reg++) {
-//         //     p += print_reg(p, s, reg, 0xFF);
-//         //     }
-//         //     p += print_reg(p, s, 0x558a, 0x1FF);  //9 bit
-//         // } else if (s->id.PID == OV2640_PID) {
-//         //     p += print_reg(p, s, 0xd3, 0xFF);
-//         //     p += print_reg(p, s, 0x111, 0xFF);
-//         //     p += print_reg(p, s, 0x132, 0xFF);
-//         // }
-
-//         p += sprintf(p, "\"xclk\":%u,",s->xclk_freq_hz / 1000000);
-//         p += sprintf(p, "\"pixformat\":%u,", s->pixformat);
-//         p += sprintf(p, "\"framesize\":%u,",  s->status.framesize);
-//         p += sprintf(p, "\"quality\":%u,", s->status.quality);
-//         p += sprintf(p, "\"brightness\":%d,", s->status.brightness);
-//         p += sprintf(p, "\"contrast\":%d,", s->status.contrast);
-//         p += sprintf(p, "\"saturation\":%d,", s->status.saturation);
-//         p += sprintf(p, "\"sharpness\":%d,", s->status.sharpness);
-//         p += sprintf(p, "\"special_effect\":%u,", s->status.special_effect);
-//         p += sprintf(p, "\"wb_mode\":%u,", s->status.wb_mode);
-//         p += sprintf(p, "\"awb\":%u,", s->status.awb);
-//         p += sprintf(p, "\"awb_gain\":%u,", s->status.awb_gain);
-//         p += sprintf(p, "\"aec\":%u,", s->status.aec);
-//         p += sprintf(p, "\"aec2\":%u,", s->status.aec2);
-//         p += sprintf(p, "\"ae_level\":%d,", s->status.ae_level);
-//         p += sprintf(p, "\"aec_value\":%u,", s->status.aec_value);
-//         p += sprintf(p, "\"agc\":%u,", s->status.agc);
-//         p += sprintf(p, "\"agc_gain\":%u,", s->status.agc_gain);
-//         p += sprintf(p, "\"gainceiling\":%u,", s->status.gainceiling);
-//         p += sprintf(p, "\"bpc\":%u,", s->status.bpc);
-//         p += sprintf(p, "\"wpc\":%u,", s->status.wpc);
-//         p += sprintf(p, "\"raw_gma\":%u,", s->status.raw_gma);
-//         p += sprintf(p, "\"lenc\":%u,", s->status.lenc);
-//         p += sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
-//         p += sprintf(p, "\"dcw\":%u,", s->status.dcw);
-//         p += sprintf(p, "\"colorbar\":%u", s->status.colorbar);
-//         // #if CONFIG_LED_ILLUMINATOR_ENABLED
-//         // p += sprintf(p, ",\"led_intensity\":%u", led_duty);
-//         // #else
-//         // p += sprintf(p, ",\"led_intensity\":%d", -1);
-//         // #endif
-//         *p++ = '}';
-//         *p++ = 0;
-//         httpd_resp_set_type(req, "application/json");
-//         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-//         return httpd_resp_send(req, json_response, strlen(json_response));
-//         // httpd_resp_set_type(req, "application/json");
-//         // httpd_resp_set_status(req, "200 OK");
-//         // httpd_resp_send(req, status_json, strlen(status_json));
-//         // return ESP_OK;
-//     }
-// #endif
-
-    esp_err_t res = ESP_OK;
-    struct stat status = {};
-    FILE *fd;
-
-    res = stat(path.c_str(), &status);
-    if (res != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Requested file/directory doesn't exist: %s", path.c_str());
-        res = httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, " URI is not available");
-        return res;
-    }
-
-    fd = fopen(path.c_str(), "r");
-    if (!fd)
-    {
-        ESP_LOGW(TAG, "File not found");
-        res = httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, " URI is not available");
-        return ESP_FAIL;
-    }
-    res = set_content_type_from_file(req, path.c_str());
-
-    if (res != ESP_OK)
-    {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed setting response type");
-        ESP_LOGW(TAG, "Failed to set HTTP response type");
-        return res;
-    }
-
-    char *chunk;
-    chunk = (char *)malloc(SCRATCH_BUFSIZE);
-    if (chunk == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate buffer");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
-        return ESP_FAIL;
-    }
-    size_t chunksize;
-    do
-    {
-        chunksize = fread(chunk, 1, SCRATCH_BUFSIZE, fd);
-        if (chunksize > 0)
-        {
-            if (httpd_resp_send_chunk(req, chunk, chunksize) != ESP_OK)
-            {
-                fclose(fd);
-                ESP_LOGE(TAG, "File sending failed!");
-                httpd_resp_sendstr_chunk(req, NULL);
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
-                return ESP_FAIL;
-            }
-        }
-    } while (chunksize != 0);
-
-    fclose(fd);
-    ESP_LOGI(TAG, "File sending complete");
-
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    //httpd_resp_set_hdr(req, "Connection", "close");
-
-    return ESP_OK;
-}
-
-
-static esp_err_t ws_handler(httpd_req_t *req)
-{
-        if (req->method == HTTP_GET) {
-                ESP_LOGI(TAG, "Handshake done, the new connection was opened");
-                return ESP_OK;
-        }
-        httpd_ws_frame_t ws_pkt;
-        uint8_t *buf = NULL;
-        memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-        ws_pkt.type = HTTPD_WS_TYPE_TEXT;
-        /* Set max_len = 0 to get the frame len */
-        esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
-        if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_ws_recv_frame failed to get frame len with %d", ret);
-        return ret;
-        }
-        ESP_LOGI(TAG, "frame len is %d", ws_pkt.len);
-        if (ws_pkt.len) {
-        /* ws_pkt.len + 1 is for NULL termination as we are expecting a string */
-        buf = (uint8_t *)calloc(1, ws_pkt.len + 1);
-        if (buf == NULL) {
-                ESP_LOGE(TAG, "Failed to calloc memory for buf");
-                return ESP_ERR_NO_MEM;
-        }
-        ws_pkt.payload = buf;
-        /* Set max_len = ws_pkt.len to get the frame payload */
-        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
-        if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "httpd_ws_recv_frame failed with %d", ret);
-                free(buf);
-                return ret;
-        }
-        ESP_LOGI(TAG, "Got packet type %d with message: %s", ws_pkt.type, ws_pkt.payload);
-
-
-        if (ws_pkt.type == HTTPD_WS_TYPE_TEXT){
-                enum { MAX_FIELDS = 4 };
-                json_t pool[ MAX_FIELDS ];
-
-                json_t const* parent = json_create( (char *) ws_pkt.payload, pool, MAX_FIELDS );
-                if ( parent == NULL ){
-                ESP_LOGE(TAG, "failed to parse json msg: %s", ws_pkt.payload);
-                return ESP_FAIL; 
-                //return EXIT_FAILURE;
-                }
-                json_t const* command = json_getProperty( parent, "command" );
-                ESP_LOGI (TAG,"Command is %s",json_getValue(command));
-        #ifdef WEBDAV_ENABLE_CAMERA
-                if (strcmp(json_getValue(command),"get") == 0){
-                free(buf);
-                static char json_response[1024];
-                sensor_t *s = esp_camera_sensor_get();
-                char *p = json_response;
-                *p++ = '{';
-
-                // if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
-                //     for (int reg = 0x3400; reg < 0x3406; reg += 2) {
-                //     p += print_reg(p, s, reg, 0xFFF);  //12 bit
-                //     }
-                //     p += print_reg(p, s, 0x3406, 0xFF);
-
-                //     p += print_reg(p, s, 0x3500, 0xFFFF0);  //16 bit
-                //     p += print_reg(p, s, 0x3503, 0xFF);
-                //     p += print_reg(p, s, 0x350a, 0x3FF);   //10 bit
-                //     p += print_reg(p, s, 0x350c, 0xFFFF);  //16 bit
-
-                //     for (int reg = 0x5480; reg <= 0x5490; reg++) {
-                //     p += print_reg(p, s, reg, 0xFF);
-                //     }
-
-                //     for (int reg = 0x5380; reg <= 0x538b; reg++) {
-                //     p += print_reg(p, s, reg, 0xFF);
-                //     }
-
-                //     for (int reg = 0x5580; reg < 0x558a; reg++) {
-                //     p += print_reg(p, s, reg, 0xFF);
-                //     }
-                //     p += print_reg(p, s, 0x558a, 0x1FF);  //9 bit
-                // } else if (s->id.PID == OV2640_PID) {
-                //     p += print_reg(p, s, 0xd3, 0xFF);
-                //     p += print_reg(p, s, 0x111, 0xFF);
-                //     p += print_reg(p, s, 0x132, 0xFF);
-                // }
-
-                p += sprintf(p, "\"xclk\":%u,",s->xclk_freq_hz / 1000000);
-                p += sprintf(p, "\"pixformat\":%u,", s->pixformat);
-                p += sprintf(p, "\"framesize\":%u,",  s->status.framesize);
-                p += sprintf(p, "\"quality\":%u,", s->status.quality);
-                p += sprintf(p, "\"brightness\":%d,", s->status.brightness);
-                p += sprintf(p, "\"contrast\":%d,", s->status.contrast);
-                p += sprintf(p, "\"saturation\":%d,", s->status.saturation);
-                p += sprintf(p, "\"sharpness\":%d,", s->status.sharpness);
-                p += sprintf(p, "\"special_effect\":%u,", s->status.special_effect);
-                p += sprintf(p, "\"wb_mode\":%u,", s->status.wb_mode);
-                p += sprintf(p, "\"awb\":%u,", s->status.awb);
-                p += sprintf(p, "\"awb_gain\":%u,", s->status.awb_gain);
-                p += sprintf(p, "\"aec\":%u,", s->status.aec);
-                p += sprintf(p, "\"aec2\":%u,", s->status.aec2);
-                p += sprintf(p, "\"ae_level\":%d,", s->status.ae_level);
-                p += sprintf(p, "\"aec_value\":%u,", s->status.aec_value);
-                p += sprintf(p, "\"agc\":%u,", s->status.agc);
-                p += sprintf(p, "\"agc_gain\":%u,", s->status.agc_gain);
-                p += sprintf(p, "\"gainceiling\":%u,", s->status.gainceiling);
-                p += sprintf(p, "\"bpc\":%u,", s->status.bpc);
-                p += sprintf(p, "\"wpc\":%u,", s->status.wpc);
-                p += sprintf(p, "\"raw_gma\":%u,", s->status.raw_gma);
-                p += sprintf(p, "\"lenc\":%u,", s->status.lenc);
-                p += sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
-                p += sprintf(p, "\"dcw\":%u,", s->status.dcw);
-                p += sprintf(p, "\"colorbar\":%u", s->status.colorbar);
-                // #if CONFIG_LED_ILLUMINATOR_ENABLED
-                // p += sprintf(p, ",\"led_intensity\":%u", led_duty);
-                // #else
-                // p += sprintf(p, ",\"led_intensity\":%d", -1);
-                // #endif
-                *p++ = '}';
-                *p++ = 0;
-                ws_pkt.len = strlen(json_response);
-                ESP_LOGI(TAG, "response packet length: %d ",  ws_pkt.len);
-                ws_pkt.payload = (uint8_t *)json_response;
-                //return trigger_async_send(req->handle, req);
-                ret = httpd_ws_send_frame(req, &ws_pkt);
-                if (ret != ESP_OK) {
-                        ESP_LOGE(TAG, "httpd_ws_send_frame failed with %d", ret);
-                }
-                //free(buf);
-                return ret;
-                }
-                else
-                {
-                if (strcmp(json_getValue(command),"update") == 0) {
-                        ESP_LOGI(TAG, "update command recieved");
-                        json_t const* target = json_getProperty( parent, "target");
-                        json_t const* value = json_getProperty( parent, "value");
-                        ESP_LOGI (TAG,"update %s", json_getValue(target));
-                        //log_i("%s = %d", variable, json_getInteger(value));
-                        sensor_t *s = esp_camera_sensor_get();
-                        int res = 0;
-
-                        if (!strcmp(json_getValue(target), "framesize")) {
-                        if (s->pixformat == PIXFORMAT_JPEG) {
-                        res = s->set_framesize(s, (framesize_t)json_getInteger(value));
-                        }
-                        } else if (!strcmp(json_getValue(target), "quality")) {
-                        res = s->set_quality(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "contrast")) {
-                        res = s->set_contrast(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "brightness")) {
-                        res = s->set_brightness(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "saturation")) {
-                        res = s->set_saturation(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "gainceiling")) {
-                        res = s->set_gainceiling(s, (gainceiling_t)json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "colorbar")) {
-                        res = s->set_colorbar(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "awb")) {
-                        res = s->set_whitebal(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "agc")) {
-                        res = s->set_gain_ctrl(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "aec")) {
-                        res = s->set_exposure_ctrl(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "hmirror")) {
-                        res = s->set_hmirror(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "vflip")) {
-                        res = s->set_vflip(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "awb_gain")) {
-                        res = s->set_awb_gain(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "agc_gain")) {
-                        res = s->set_agc_gain(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "aec_value")) {
-                        res = s->set_aec_value(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "aec2")) {
-                        res = s->set_aec2(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "dcw")) {
-                        res = s->set_dcw(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "bpc")) {
-                        res = s->set_bpc(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "wpc")) {
-                        res = s->set_wpc(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "raw_gma")) {
-                        res = s->set_raw_gma(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "lenc")) {
-                        res = s->set_lenc(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "special_effect")) {
-                        res = s->set_special_effect(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "wb_mode")) {
-                        res = s->set_wb_mode(s, json_getInteger(value));
-                        } else if (!strcmp(json_getValue(target), "ae_level")) {
-                        res = s->set_ae_level(s, json_getInteger(value));
-                        }
-                        else {
-                                ESP_LOGW(TAG, "Unknown command: %s", json_getValue(target));
-                                res = -1;
-                        }
-                }
-                }
-        #endif            
-        }
-        ret = httpd_ws_send_frame(req, &ws_pkt);
-        if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "httpd_ws_send_frame failed with %d", ret);
-        }
-        free(buf);
-
-        }
-        return ret;
 }
 
 esp_err_t web_options_handler(struct httpd_req *req)
@@ -617,6 +269,15 @@ esp_err_t web_options_handler(struct httpd_req *req)
         return ESP_OK;
 }
 
+static time_t parseDateTime(const char* datetimeString, const char* format)
+{
+    struct tm tmStruct;
+    if (strptime(datetimeString, format, &tmStruct) == NULL){
+        ESP_LOGE(TAG,"Could not extract datetime from string %s", datetimeString);
+    }
+    return mktime(&tmStruct);
+}
+
 void DavServer::register_server(httpd_handle_t server)
 {
     if (this->webdav_->get_auth() == BASIC)
@@ -625,7 +286,6 @@ void DavServer::register_server(httpd_handle_t server)
     }
 
     char *uri;
-//    asprintf(&uri, "%s/*?", this->rootURI);
     asprintf(&uri, "%s/*?", this->webdav_->get_share_name().c_str());
 
     httpd_uri_t uri_dav = {
@@ -635,21 +295,6 @@ void DavServer::register_server(httpd_handle_t server)
         .user_ctx = this,
     };
 
-    httpd_uri_t uri_web = {
-        .uri = "/*",
-        //.uri = this->webdav_->get_web_uri().c_str(),
-        .method = HTTP_GET,
-        .handler = web_handler,
-        .user_ctx = this->webdav_,
-    };
-
-    httpd_uri_t uri_ws = {
-        .uri = "/ws",
-        .method = HTTP_GET,
-        .handler = ws_handler,
-        .user_ctx = NULL,
-        .is_websocket = true
-    };
     
     httpd_uri_t uri_web_options = {
         .uri = "/*",
@@ -686,9 +331,7 @@ void DavServer::register_server(httpd_handle_t server)
         ESP_LOGD(TAG, "Registering handler for %s ", uri_dav.uri);
         httpd_register_uri_handler(server, &uri_dav);
     }
-    httpd_register_uri_handler(server, &uri_ws);
-    httpd_register_uri_handler(server, &uri_web);
-    //httpd_register_uri_handler(server, &uri_capture);
+
     httpd_register_uri_handler(server, &uri_web_options);
     httpd_register_uri_handler(server, &uri_web_propfind);
 }
@@ -723,8 +366,10 @@ std::string DavServer::formatTime(time_t t) {
 
 std::string DavServer::formatTimeTxt(time_t t) {
         char buf[32];
-        struct tm *lt = localtime(&t);
+        struct tm *lt = gmtime(&t);
+        //strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S %Z", lt);
         strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S %Z", lt);
+
         return std::string(buf);
 }
 
@@ -735,7 +380,7 @@ std::string DavServer::formatTimeETag(time_t t) {
         return std::string(buf);
 }
 
-static void xmlElement(std::ostringstream &s, const char *name, const char *value) {
+static void xmlElementstr(std::ostringstream &s, const char *name, const char *value) {
         if (value == ""){
                 s << "<" << name << "/>";
         }else{
@@ -743,56 +388,56 @@ static void xmlElement(std::ostringstream &s, const char *name, const char *valu
         }
 }
 
-void DavServer::sendMultiStatusResponse(Response &resp, MultiStatusResponse &msr) {
-        std::ostringstream s;
+// void DavServer::sendMultiStatusResponse(Response &resp, MultiStatusResponse &msr) {
+//         std::ostringstream s;
 
-        s << "<D:response>";
-        xmlElement(s, "D:href", msr.href.c_str());
-        xmlElement(s, "D:status", msr.status.c_str());
+//         s << "<D:response>";
+//         xmlElementstr(s, "D:href", msr.href.c_str());
+//         xmlElementstr(s, "D:status", msr.status.c_str());
  
-        if (msr.path == "/") {
-                s << "<D:propstat><D:prop>";
-                xmlElement(s, "D:quota-available-bytes",  std::to_string(msr.quota_available_bytes).c_str());
-                xmlElement(s, "D:quota-used-bytes",  std::to_string(msr.quota_used_bytes).c_str());
-                // s << "<D:quota-available-bytes>1000000</D:quota-available-bytes>";
-                // s << "<D:quota-used-bytes>10000</D:quota-used-bytes>";
-                s << "</D:prop></D:propstat>";              
-        }else{
-                s << "<D:propstat><D:prop>";
+//         if (msr.path == "/") {
+//                 s << "<D:propstat><D:prop>";
+//                 xmlElementstr(s, "D:quota-available-bytes",  std::to_string(msr.quota_available_bytes).c_str());
+//                 xmlElementstr(s, "D:quota-used-bytes",  std::to_string(msr.quota_used_bytes).c_str());
+//                 // s << "<D:quota-available-bytes>1000000</D:quota-available-bytes>";
+//                 // s << "<D:quota-used-bytes>10000</D:quota-used-bytes>";
+//                 s << "</D:prop></D:propstat>";              
+//         }else{
+//                 s << "<D:propstat><D:prop>";
 
-                for (const auto &p: msr.props)
-                        xmlElement(s, p.first.c_str(), p.second.c_str());
+//                 for (const auto &p: msr.props)
+//                         xmlElementstr(s, p.first.c_str(), p.second.c_str());
 
-                xmlElement(s, "D:resourcetype", msr.isCollection ? "<D:collection/>" : "");
-                // s << "<D:supportedlock>";
-                // s << "<D:lockentry>";
-                // s << "<D:lockscope>";
-                // s << "<D:exclusive/>";
-                // s << "</D:lockscope>";
-                // s << "<D:locktype>";        
-                // s << "<D:write/>";
-                // s << "</D:locktype>";
-                // s << "</D:lockentry>";
-                // s << "<D:lockentry>";
-                // s << "<D:lockscope>";
-                // s << "<D:shared/>";
-                // s << "</D:lockscope>";
-                // s << "<D:locktype>";
-                // s << "<D:write/>";
-                // s << "</D:locktype>";
-                // s << "</D:lockentry>";
-                // s << "</D:supportedlock>";
+//                 xmlElementstr(s, "D:resourcetype", msr.isCollection ? "<D:collection/>" : "");
+//                 // s << "<D:supportedlock>";
+//                 // s << "<D:lockentry>";
+//                 // s << "<D:lockscope>";
+//                 // s << "<D:exclusive/>";
+//                 // s << "</D:lockscope>";
+//                 // s << "<D:locktype>";        
+//                 // s << "<D:write/>";
+//                 // s << "</D:locktype>";
+//                 // s << "</D:lockentry>";
+//                 // s << "<D:lockentry>";
+//                 // s << "<D:lockscope>";
+//                 // s << "<D:shared/>";
+//                 // s << "</D:lockscope>";
+//                 // s << "<D:locktype>";
+//                 // s << "<D:write/>";
+//                 // s << "</D:locktype>";
+//                 // s << "</D:lockentry>";
+//                 // s << "</D:supportedlock>";
 
-                s << "</D:prop>";
-                s << "</D:propstat></D:response>";
+//                 s << "</D:prop>";
+//                 s << "</D:propstat></D:response>";
 
-        }
+//         }
 
-        resp.sendChunk(s.str().c_str());
-}
+//         resp.sendChunk(s.str().c_str());
+// }
 
 int  DavServer::sendRootPropResponse(Response &resp) {
-        using namespace tinyxml2;
+        //using namespace tinyxml2;
 
         XMLDocument respXML;
         XMLElement * oRoot = respXML.NewElement("D:multistatus");
@@ -839,7 +484,7 @@ int  DavServer::sendRootPropResponse(Response &resp) {
         respXML.InsertFirstChild(respXML.NewDeclaration());
         XMLPrinter printer;
         respXML.Accept( &printer );
-        ESP_LOGI(TAG, "Output:\n%s\n", printer.CStr());
+        // ESP_LOGI(TAG, "Output:\n%s\n", printer.CStr());
 
         resp.setStatus(207, "Multi-Status");
         resp.setContentType("text/xml; charset=\"utf-8\"");
@@ -848,7 +493,7 @@ int  DavServer::sendRootPropResponse(Response &resp) {
         return 207;            
 }
 
-int DavServer::sendPropResponse(Response &resp, std::string path, int recurse) {
+int DavServer::xmlPropResponse(XMLDocument *respXML, XMLElement *oRoot, std::string path, int recurse) {
         struct stat sb;
 
         int ret = stat(uriToPath(path).c_str(), &sb);
@@ -856,46 +501,77 @@ int DavServer::sendPropResponse(Response &resp, std::string path, int recurse) {
                 ESP_LOGE(TAG,"sendPropResponse stat failed Error: %d ErrNo: %d", ret, -errno);
                 return -errno;
         }
+        XMLElement * oResponse = respXML->NewElement("D:response");
+        XMLElement * oHref = respXML->NewElement("D:href");
+        oHref->SetText(path.c_str());
+        oResponse->InsertEndChild(oHref);
+        
+        XMLElement * oStatus = respXML->NewElement("D:status");
+        oStatus->SetText("HTTP/1.1 200 OK");
+        oResponse->InsertEndChild(oStatus);
 
-        std::string uri = uriToPath(path);
+        //
 
-        MultiStatusResponse r;
+        XMLNode * oPropstat = respXML->NewElement("D:propstat");
+        XMLNode * oProp = respXML->NewElement("D:prop");
 
- 
-        r.href = path;          
+        XMLElement * oCreationDate = respXML->NewElement("D:creationdate");
+        oCreationDate->SetText(formatTime(sb.st_ctime == 0?sb.st_mtime:sb.st_ctime).c_str());
+        oProp->InsertEndChild(oCreationDate);
 
-        r.path = path;
-        r.status = "HTTP/1.1 200 OK",
-        r.quota_available_bytes = 1234567;
-        r.quota_used_bytes = 123456;
+        XMLElement * oDisplayName = respXML->NewElement("D:displayname");
+        oDisplayName->SetText(basename(path.c_str()));
+        oProp->InsertEndChild(oDisplayName);
+        
+        // XMLElement * oDisplayName = respXML->NewElement("D:displayname");
+        // oProp->InsertEndChild(oDisplayName->SetText(basename(path.c_str())));
+        // //oProp->InsertEndChild(respXML->NewElement("D:displayname")->SetText(basename(path.c_str())));
 
+        //XMLElement * oLanguage = respXML->NewElement("D:getcontentlanguage");
+        //oProp->InsertEndChild(oLanguage);
+        oProp->InsertEndChild(respXML->NewElement("D:getcontentlanguage"));
 
-        r.props["D:getlastmodified"] = formatTimeTxt(sb.st_mtime);
-        r.props["D:displayname"] = basename(path.c_str());
-        r.props["D:creationdate"] = formatTime(sb.st_ctime);
-        r.props["D:ishidden"] = "0";
-        r.props["D:getcontentlanguage"] = "";
-        //r.props["D:lockdiscovery"] = "";
+        XMLElement * oLength = respXML->NewElement("D:getcontentlength");
+        oLength->SetText((int)sb.st_size);
+        oProp->InsertEndChild(oLength);
+        //oProp->InsertEndChild(respXML->NewElement("D:getcontentlength")->SetText((int)sb.st_size));
 
-        r.isCollection = ((sb.st_mode & S_IFMT) == S_IFDIR);
+        XMLElement * oType = respXML->NewElement("D:getcontenttype");
+        oType->SetText(get_content_type_from_file(basename(path.c_str())));
+        oProp->InsertEndChild(oType);
 
-        if (!r.isCollection) {
-                r.props["D:getcontentlength"] = std::to_string(sb.st_size);
-                r.props["D:getcontenttype"] = get_content_type_from_file(basename(path.c_str()));
-                //r.props["D:getcontenttype"] = "application/binary";
-                r.props["D:getetag"] = formatTimeETag(sb.st_mtime);
-                r.props["D:iscollection"] = "0";
-        } else {
-                r.props["D:getcontentlength"] = "0";
-                r.props["D:getcontenttype"] = "";
-                r.props["D:iscollection"] = "1";
-                r.props["D:getetag"] = "";    
+        XMLElement * oEtag = respXML->NewElement("D:getetag");
+        oEtag->SetText(formatTimeETag(sb.st_mtime).c_str());
+        oProp->InsertEndChild(oEtag);
+
+        XMLElement * oLastMod = respXML->NewElement("D:getlastmodified");
+        oLastMod->SetText(formatTimeTxt(sb.st_mtime).c_str());
+        oProp->InsertEndChild(oLastMod);
+
+        XMLElement * oIscollecton = respXML->NewElement("D:iscollection");
+        oIscollecton->SetText((sb.st_mode & S_IFMT) == S_IFDIR ? 1 : 0);
+        oProp->InsertEndChild(oIscollecton);       
+
+        XMLElement * oIsHidden = respXML->NewElement("D:ishidden");
+        oIsHidden->SetText(0);
+        oProp->InsertEndChild(oIsHidden); 
+
+        XMLNode * oResourceType = respXML->NewElement("D:resourcetype");
+        if ((sb.st_mode & S_IFMT) == S_IFDIR){
+                XMLElement * oCollection = respXML->NewElement("D:collection");
+                oResourceType->InsertEndChild(oCollection);
         }
 
-        sendMultiStatusResponse(resp, r);
+        oProp->InsertEndChild(oResourceType);       
 
-        if (r.isCollection && recurse > 0) {
-                DIR *dir = opendir(uri.c_str());
+        oPropstat->InsertEndChild(oProp);
+        oResponse->InsertEndChild(oPropstat);
+        
+        oRoot->InsertEndChild(oResponse);
+        //ESP_LOGW(TAG, "xml recurse: %d path: %s uri:%S", recurse, path.c_str(), uriToPath(path).c_str()); 
+        if ((sb.st_mode & S_IFMT) == S_IFDIR && recurse > 0 ){
+                DIR *dir = opendir(uriToPath(path).c_str());
+                //DIR *dir = opendir(uri.c_str());
                 //DIR *dir = opendir(path.c_str());
                 if (dir) {
                         struct dirent *de;
@@ -906,15 +582,90 @@ int DavServer::sendPropResponse(Response &resp, std::string path, int recurse) {
                                         continue;
 
                                 std::string rpath = path + "/" + de->d_name;
-                                sendPropResponse(resp, rpath, recurse-1);
+                                xmlPropResponse(respXML, oRoot, path + "/" + de->d_name,  recurse -1 );
+                                //sendPropResponse(resp, rpath, recurse-1);
                         }
 
                         closedir(dir);
                 }
+          //ESP_LOGI(TAG, "xml recurse %d root %s", recurse - 1, (path + "/" + basename(path.c_str())).c_str());      
+          //xmlPropResponse(respXML, oRoot, path + "/" + basename(path.c_str()) , recurse - 1);     
         }
-
         return 0;
 }
+
+// int DavServer::sendPropResponse(Response &resp, std::string path, int recurse) {
+//         struct stat sb;
+
+//         int ret = stat(uriToPath(path).c_str(), &sb);
+//         if (ret < 0){
+//                 ESP_LOGE(TAG,"sendPropResponse stat failed Error: %d ErrNo: %d", ret, -errno);
+//                 return -errno;
+//         }
+
+//         std::string uri = uriToPath(path);
+
+//         MultiStatusResponse r;
+
+//         r.href = path;          
+
+//         r.path = path;
+//         r.status = "HTTP/1.1 200 OK",
+//         r.quota_available_bytes = this->sdmmc_->get_free_capacity();
+//         r.quota_used_bytes = this->sdmmc_->get_used_capacity();
+
+//         r.props["D:getlastmodified"] = formatTimeTxt(sb.st_mtime);
+        
+//         r.props["D:displayname"] = basename(path.c_str());
+//         //r.props["D:creationdate"] = formatTimeTxt(sb.st_ctime);
+//         //r.props["D:creationdate"] = formatTime(sb.st_ctime);
+//         if (sb.st_ctime == 0){
+//                 r.props["D:creationdate"] = formatTime(sb.st_mtime);
+//         }else{
+//                 r.props["D:creationdate"] = formatTime(sb.st_ctime);
+//         }
+//         r.props["D:ishidden"] = "0";
+//         r.props["D:getcontentlanguage"] = "";
+//         //r.props["D:lockdiscovery"] = "";
+
+//         r.isCollection = ((sb.st_mode & S_IFMT) == S_IFDIR);
+
+//         if (!r.isCollection) {
+//                 r.props["D:getcontentlength"] = std::to_string(sb.st_size);
+//                 r.props["D:getcontenttype"] = get_content_type_from_file(basename(path.c_str()));
+//                 //r.props["D:getcontenttype"] = "application/binary";
+//                 r.props["D:getetag"] = formatTimeETag(sb.st_mtime);
+//                 r.props["D:iscollection"] = "0";
+//         } else {
+//                 r.props["D:getcontentlength"] = "0";
+//                 r.props["D:getcontenttype"] = "";
+//                 r.props["D:iscollection"] = "1";
+//                 r.props["D:getetag"] = "";    
+//         }
+
+//         sendMultiStatusResponse(resp, r);
+
+//         if (r.isCollection && recurse > 0) {
+//                 DIR *dir = opendir(uri.c_str());
+//                 //DIR *dir = opendir(path.c_str());
+//                 if (dir) {
+//                         struct dirent *de;
+
+//                         while ((de = readdir(dir))) {
+//                                 if (strcmp(de->d_name, ".") == 0 ||
+//                                     strcmp(de->d_name, "..") == 0)
+//                                         continue;
+
+//                                 std::string rpath = path + "/" + de->d_name;
+//                                 sendPropResponse(resp, rpath, recurse-1);
+//                         }
+
+//                         closedir(dir);
+//                 }
+//         }
+
+//         return 0;
+// }
 
 int DavServer::doCopy(Request &req, Response &resp) {
         if (req.getDestination().empty())
@@ -970,12 +721,29 @@ int DavServer::doDelete(Request &req, Response &resp) {
 }
 
 int DavServer::doGet(Request &req, Response &resp) {
-        ESP_LOGI(TAG,"Get request for %s", this->uriToPath(req.getPath()).c_str());
 
+        std::string translate = req.getHeader("translate");
+        std::string mod_since = req.getHeader("If-Modified-Since"); 
+        ESP_LOGI(TAG,"Get request for %s translate %s", 
+                this->uriToPath(req.getPath()).c_str(), 
+                translate.c_str());
+        ESP_LOGI(TAG,"Get request for %s mod-since %s", 
+                this->uriToPath(req.getPath()).c_str(), 
+                mod_since.c_str());
         struct stat sb;
         int ret = stat(uriToPath(req.getPath()).c_str(), &sb);
         if (ret < 0)
                 return 404;
+
+        if (mod_since != ""){
+                const char* format = "%a, %d %b %Y %H:%M:%S %Z";
+                time_t parsedtime = parseDateTime(mod_since.c_str(), format);
+                if(sb.st_mtime >= parsedtime){
+                        ESP_LOGI(TAG, "return 304");
+                        return 304;
+                }
+        }        
+
 
         FILE *f = fopen(uriToPath(req.getPath()).c_str(), "r");
         if (!f)
@@ -990,7 +758,7 @@ int DavServer::doGet(Request &req, Response &resp) {
 
         ret = 0;
 
-        const int chunkSize = 8192;
+        const int chunkSize = 16384;
         char *chunk = (char *) malloc(chunkSize);
 
         for (;;) {
@@ -1028,6 +796,7 @@ int DavServer::doHead(Request &req, Response &resp) {
 }
 
 int DavServer::doLock(Request &req, Response &resp) {
+        //char href[255] = "https://192.168.0.49";
         char href[255] = "";
         strcat (href, req.getPath().c_str());
 
@@ -1146,11 +915,7 @@ int DavServer::doOptions(Request &req, Response &resp) {
 }
 
 int DavServer::doPropfind(Request &req, Response &resp) {
-        //ESP_LOGI(TAG, "Propfind: getPath: %s rootPath: %s uriToPath: %s",
-        // req.getPath().c_str(),
-        // rootPath.c_str(),
-        // this->uriToPath(req.getPath()).c_str()
-        // );
+
         struct stat sb;
         int ret = stat(uriToPath(req.getPath()).c_str(), &sb);
         if (ret < 0)
@@ -1171,13 +936,25 @@ int DavServer::doPropfind(Request &req, Response &resp) {
         resp.setContentType("text/xml; charset=\"utf-8\"");
         //resp.flushHeaders();
 
-        resp.sendChunk("<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n");
-        resp.sendChunk("<D:multistatus xmlns:D=\"DAV:\">\n");
+        //using namespace tinyxml2;
 
-
-        sendPropResponse(resp, req.getPath(), recurse);
-        resp.sendChunk("</D:multistatus>\n");
+        XMLDocument respXML;
+        XMLElement * oRoot = respXML.NewElement("D:multistatus");
+        oRoot->SetAttribute("xmlns:D", "DAV");
+        xmlPropResponse(&respXML, oRoot, req.getPath(), recurse);
+        respXML.InsertFirstChild(oRoot);
+        respXML.InsertFirstChild(respXML.NewDeclaration());
+        XMLPrinter printer;
+        respXML.Accept( &printer );
+        //ESP_LOGI(TAG, "Output:\n%s\n", printer.CStr());
+        resp.sendChunk(printer.CStr());
         resp.closeChunk();
+
+        // resp.sendChunk("<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n");
+        // resp.sendChunk("<D:multistatus xmlns:D=\"DAV:\">\n");
+        // sendPropResponse(resp, req.getPath(), recurse);
+        // resp.sendChunk("</D:multistatus>\n");
+        // resp.closeChunk();
 
         return 207;
 }

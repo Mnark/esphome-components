@@ -1,14 +1,8 @@
 # ESPHome WebDav component
 
-This component allows an SD Card to be shared via the WebDav protocol to other computers in the local network. It is dependant on the sdmmc component to mount the card into the local file system. It provides a very basic level of security (which can be disabled).
-
-.. warning::
-
-    This component is still under development.
+This component allows an SD Card to be shared via the WebDav protocol to other computers in the local network. It is dependant on the sdmmc component to mount the card onto the local file system. It provides a very basic level of security (which can be disabled).
 
 ## Configuration
-
-
 
 ```yaml
 # Example configuration entry
@@ -38,12 +32,11 @@ webdav:
 * **sdmmc** (Required): The id of the sdmmc card to be shared.
 * **share_name** (Optional, Default share): The name of the virtual directory to be shared. This does not have to actually be present of the card but will be used when creating the share. (e.g. when a share_name of "share" the network addres when connecting to the drive will be http://[ip-address]/share ).  
 * **auth** (Optional, Default BASIC): The authentication method applied. Can be either BASIC (user/password required) or NONE.
-* **user**
-* **password**
-* **enable_web**
-* **web_directory**
-* **home_page**
-* **camera**
+* **user** (Required if auth is BASIC)
+* **password** (Required if auth is BASIC)
+* **enable_web** (Optional, Default True): Enable in built web site hosting.
+* **web_directory** (Optional, Default www): Specify the directory on the SD card that contains the web pages.
+* **home_page** (Optional): Enable the camera for the website.
 
 ## Usage
 

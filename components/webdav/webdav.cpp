@@ -7,10 +7,13 @@
 
 #include "webdav.h"
 #include "davserver.h"
+//#ifdef WEBDAV_ENABLE_WEBSERVER
+#include "webserver.h"
+//#endif
 
 #include "request-espidf.h"
 #include "response-espidf.h"
-#include "tiny-json.h"
+//#include "tiny-json.h"
 
 static const char *TAG = "webdav";
 
@@ -67,6 +70,8 @@ WebDav::~WebDav() {}
 void WebDav::setup()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = this->port_;
+    config.ctrl_port = 32770;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 32;
     config.max_open_sockets = 3;
@@ -84,19 +89,24 @@ void WebDav::setup()
     {
         webdav::DavServer *webDavServer = new webdav::DavServer(this);
         webDavServer->register_server(this->server);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Failed to start http server Error: %s", esp_err_to_name(err));
-    }
-
+#ifdef WEBDAV_ENABLE_WEBSERVER
+        webdav::WebServer *webServer = new webdav::WebServer(this);
+        webServer->register_server(this->server);
 #ifdef WEBDAV_ENABLE_CAMERA    
     if (this->camera_){
         ESP_LOGD(TAG, "Starting http streaming server");
         this->webCamServer = new webdav::CamServer(this->camera_);
         err = this->webCamServer->start();
     }
-#endif    
+#endif  
+#endif
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to start http server Error: %s", esp_err_to_name(err));
+    }
+
+  
 }
 
 void WebDav::on_shutdown()
@@ -105,7 +115,6 @@ void WebDav::on_shutdown()
 #ifdef WEBDAV_ENABLE_CAMERA    
     this->webCamServer->stop();
 #endif    
-    //httpd_stop(this->stream_server);
     this->server = NULL;
 }
 
@@ -116,13 +125,14 @@ void WebDav::dump_config()
     ESP_LOGCONFIG(TAG, "  Authentication: %s", (this->auth_ == NONE)?"NONE":"BASIC");
     ESP_LOGCONFIG(TAG, "  SD Card: %s", this->get_sdmmc_state().c_str());
     ESP_LOGCONFIG(TAG, "  Share Name: %s", this->share_name_.c_str());
-#ifdef WEBDAV_ENABLE_CAMERA
-    ESP_LOGCONFIG(TAG, "  Camera: Available",this->camera_? "Available": "Not Available" );
-#endif
+
     ESP_LOGCONFIG(TAG, "  Web Browsing: %s", this->web_enabled_?"Enabled":"Not Enabled");
     if (this->web_enabled_){
         ESP_LOGCONFIG(TAG, "    Home Page: %s", this->home_page_);
         ESP_LOGCONFIG(TAG, "    Web Directory: %s", this->web_directory_.c_str());
+#ifdef WEBDAV_ENABLE_CAMERA
+        ESP_LOGCONFIG(TAG, "  Camera: Available",this->camera_? "Available": "Not Available" );
+#endif
     }
 }
 
@@ -163,6 +173,10 @@ std::string WebDav::get_sdmmc_state(){
             response = "UNKNOWN";
     }
     return response;
+}
+
+httpd_handle_t WebDav::get_http_server(void){
+    return this->server;
 }
 
 #ifdef WEBDAV_ENABLE_CAMERA

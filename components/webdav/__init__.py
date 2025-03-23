@@ -60,17 +60,13 @@ def validate_auth(value):
 CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, validate_auth)
 
 async def to_code(config):
-    print (config)
+    #print (config)
     cg.add_library(
-    name="tinyxml2",
-    repository="https://github.com/leethomason/tinyxml2",
-    version=None,
+        name="tinyxml2",
+        repository="https://github.com/leethomason/tinyxml2",
+        version=None,
     )
-    cg.add_library(
-    name="tiny-json",
-    repository="https://github.com/rafagafe/tiny-json",
-    version=None,
-    )
+
     server = cg.new_Pvariable(config[CONF_ID])
     cg.add(server.set_port(config[CONF_PORT]))
     sd = await cg.get_variable(config.get(CONF_SDMMC))
@@ -84,15 +80,20 @@ async def to_code(config):
         base64_string = base64_bytes.decode("ascii")
         cg.add(server.set_auth_credentials(base64_string))
 
+    cg.add(server.set_web_enabled(config[CONF_WEB_ENABLED]))
+    if config[CONF_WEB_ENABLED] == True:
+        cg.add_define("WEBDAV_ENABLE_WEBSERVER")
+        cg.add_library(
+            name="tiny-json",
+            repository="https://github.com/rafagafe/tiny-json",
+            version=None,
+        ) 
+        cg.add(server.set_home_page(config[CONF_HOME_PAGE]))
+        cg.add(server.set_web_directory(config[CONF_WEB_DIR]))
+
     if CONF_CAMERA in config:
         print("Camera configured")
         cg.add_define("WEBDAV_ENABLE_CAMERA")
         camera = await cg.get_variable(config.get(CONF_CAMERA))
-        cg.add(server.set_camera(camera))
-
-
-    cg.add(server.set_web_enabled(config[CONF_WEB_ENABLED]))
-    if config[CONF_WEB_ENABLED] == True: 
-        cg.add(server.set_home_page(config[CONF_HOME_PAGE]))
-        cg.add(server.set_web_directory(config[CONF_WEB_DIR]))
+        cg.add(server.set_camera(camera))    
     await cg.register_component(server, config)

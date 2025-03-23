@@ -66,6 +66,7 @@ class WebDav : public Component {
   std::string get_share_name(void);
   std::string get_mount_point(void);
   std::string get_web_uri(void);
+  httpd_handle_t get_http_server(void);
   char *get_home_page(void);
   //void set_home_page(const char*);
   void webdav_register(httpd_handle_t, const char *, const char *);
