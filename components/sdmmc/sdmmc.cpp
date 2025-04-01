@@ -64,7 +64,6 @@ static esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16
   return ESP_OK;
 }
 
-
 static const LogString *sdmmc_state_to_string(State state) {
   switch (state) {
     case State::UNKNOWN:
@@ -271,6 +270,7 @@ static void write_file_async(void *arg){
 
 static esp_err_t finalise_avi_process(current_file_t *current_file) {
 
+#ifdef SDMMC_AVI_HAS_INDEX
     current_file->index.fcc = {'i','d','x','1'};
     current_file->index.cb = current_file->entries.size() * sizeof(_avioldindex_entry); 
     fwrite(&current_file->index, sizeof(AVIOLDINDEX), 1, current_file->handle);
@@ -281,7 +281,7 @@ static esp_err_t finalise_avi_process(current_file_t *current_file) {
       fwrite(&e, sizeof(_avioldindex_entry), 1, current_file->handle);
       current_file->size += sizeof(_avioldindex_entry);
     }
-
+#endif
     //pad the file so that it is a multiple of 8 bytes
     if (current_file->size % 8 > 0){
       int pad = 8 - (current_file->size % 8);
@@ -306,11 +306,13 @@ static esp_err_t finalise_avi_process(current_file_t *current_file) {
     fwrite(&current_file->header, sizeof(AVIHeader), 1, current_file->handle);
 
     fclose(current_file->handle);
-    ESP_LOGI(TAG, "File %s complete Frame count: %d Time: %llu secs",
+    ESP_LOGI(TAG, "File %s complete. Frame count: %d Time: %llu secs",
       current_file->key.c_str(),
       current_file->frame_count,
       elapsed_time / 1000000);
-    vQueueDelete(current_file->queue);
+    if (current_file->async){
+      vQueueDelete(current_file->queue);
+    }
     if (current_file->buffer_len > 0){
       free(current_file->buffer);
     }
@@ -321,45 +323,7 @@ static esp_err_t finalise_avi_process(current_file_t *current_file) {
 static void avi_process(void *arg){
   current_file_t *current_file = (current_file_t *)arg;
   frame_image_t  current_image;
-  current_file->header = {
-    .dwRIFF = 1179011410,
-    .daAVI = 541677121,
-    .fccList = {'L','I','S','T'},
-    .dwSize = 68 + sizeof(AVIStreamHeader) + sizeof(BITMAPINFOHEADER) + 28,
-    .fccHdrl = {'h','d','r','l'},
-    .dwAvih = 1751742049,
-    .dwAvihSize = 56,
-    .dwFlags = 16, 
-    .dwStreams = 1,
-    .dwStrlList= {'L','I','S','T'},
-    .dwStrlSize = sizeof(AVIStreamHeader) + sizeof(BITMAPINFOHEADER) + 20,
-    .dwStrl = {'s','t','r','l'},
-    .fccStrh = {'s','t','r','h'},
-    .dwStrhSize = sizeof(AVIStreamHeader),
-    .dwStrh = {
-      .fccType ={'v','i','d','s'},
-      .fccHandler = {'M','J','P','G'},
-      .dwScale = 100000,
-      .dwRate = 1000000, 
-      .dwQuality = 10000,
-    },  
-    .fccStrf = {'s','t','r','f'},
-    .dwStrfSize = sizeof(BITMAPINFOHEADER),
-    .dwStrf = {
-      .biSize = 40,
-      .biPlanes = 1,
-      .biBitCount = 24,
-      .biCompression = {'M','J','P','G'},
-    },
-    .dwMoviList = 1414744396
-  };
   
-  fwrite(&current_file->header, sizeof(AVIHeader), 1, current_file->handle);
-
-  current_file->frame_count = 0;
-  current_file->start = esp_timer_get_time();
-  current_file->size = sizeof(AVIHeader);
-
   while ( true ){
     if (xQueuePeek(current_file->queue, &current_image, 0) == pdPASS){
       if (current_image.length == 0){
@@ -380,19 +344,21 @@ static void avi_process(void *arg){
         current_file->header.dwStrf.biSizeImage = (uint32_t)width * height * current_file->header.dwStrf.biBitCount / 8;
       }
       int pad = 4 - (current_image.length % 4);
-      MOVIHeader movi = {1769369453, 1667510320, current_image.length + pad + 4};
+      MOVIHeader movi = { {'0','0','d','c'}, current_image.length + pad};
       fwrite(&movi, sizeof(MOVIHeader), 1, current_file->handle);
 
       fwrite(current_image.data, current_image.length, 1, current_file->handle);
 
       fwrite(&padding, pad, 1, current_file->handle);
 
+#ifdef SDMMC_AVI_HAS_INDEX
       _avioldindex_entry item;
       item.dwChunkId = {'0', '0', 'd', 'c'} ;
       item.dwFlags = 16;
       item.dwOffset = current_file->size;
       item.dwSize = current_image.length;
       current_file->entries.push_back(item);
+#endif
       if (current_image.length + pad  > current_file->header.dwSuggestedBufferSize)
         current_file->header.dwSuggestedBufferSize = current_image.length + pad;
       current_file->frame_count = current_file->frame_count+1;
@@ -400,7 +366,7 @@ static void avi_process(void *arg){
       current_file->header.dwMoviSize += (current_image.length + sizeof(MOVIHeader) + pad);
       xQueueReceive(current_file->queue, &current_image, 10);
     }
-    vTaskDelay(5);
+    vTaskDelay(1);
   }
   esp_err_t err = finalise_avi_process(current_file);
   if (err != ESP_OK){
@@ -412,10 +378,27 @@ static void avi_process(void *arg){
 esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
   char *fullpath = new char[64];
   bool save_sync = false;
+  struct stat st = {};
   
   esp_err_t err= path_to_uri(path, fullpath, true);
   if (err != ESP_OK){
     return err;
+  }
+  int ret = stat(fullpath, &st);
+  if (ret == 0){
+    int version = 0;
+    char *newpath = new char[64];
+    strcat(fullpath, "\0");
+    char *extPtr = strrchr(fullpath, '.');
+    char startStr[64];
+    strncpy(startStr, fullpath, strlen(fullpath) - strlen(extPtr));
+    startStr[strlen(fullpath) - strlen(extPtr)] = 0;
+    while (ret == 0){
+      version++;
+      sprintf (newpath, "%s(%d)%s", startStr, version, extPtr);
+      ret = stat(newpath, &st);
+    }
+    strcpy(fullpath, newpath);
   }
   
   if (!save_sync){
@@ -467,24 +450,18 @@ esp_err_t SDMMC::write_file(const char *path, uint32_t len, std::vector<uint8_t>
   return ESP_OK;
 }
 
-
-esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *data) {
+esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *data, bool write_async ) {
   struct stat st = {};
   char *fullpath = new char[64];
   current_file_t current_file;
-  // ESP_LOGI(TAG, "Initialising File %s", path);
-  // strcpy(fullpath, mount_point_.c_str());
-  // if (strncmp(path, "/", 1) != 0) {
-  //   strcat(fullpath, "/");
-  // }
-  // strcat(fullpath, path);
+
   esp_err_t err= path_to_uri(path, fullpath, true);
   if (err != ESP_OK){
     return err;
   }
   int ret = stat(fullpath, &st);
+  
   if (ret == 0){
-
     int version = 0;
     char *newpath = new char[64];
     strcat(fullpath, "\0");
@@ -500,26 +477,41 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
     strcpy(fullpath, newpath);
   }
 
-   if (ret < 0) {
-    current_file.handle = fopen(fullpath, "ab");
-    if (current_file.handle == NULL) {
-      ESP_LOGE(TAG, "Failed to open file %s for writing", fullpath);
-      return ESP_FAIL;
-    }
-
+  current_file.async = write_async;
+  current_file.handle = fopen(fullpath, "ab");
+  if (current_file.handle == NULL) {
+    ESP_LOGE(TAG, "Failed to open file %s for writing", fullpath);
+    return ESP_FAIL;
+  }
+  if(current_file.async){
     current_file.queue = xQueueCreate(1, sizeof(frame_image_t));
     if (current_file.queue == NULL){
       ESP_LOGE(TAG, "Failed to create Queue");
     }
-    
-    current_file.filename = fullpath;
-    current_file.key = path;
-    current_file.buffer_len = 0;
-    const auto [it, success2] = active_avi_processes.insert({path, current_file});
-    if(success2 != true){
-      ESP_LOGE(TAG, "Failed to insert process into process map");
-      return ESP_FAIL;
-    }
+  }
+
+  current_file.filename = fullpath;
+  current_file.key = path;
+  current_file.buffer_len = 0;
+  current_file.header = default_header;
+
+  fwrite(&current_file.header, sizeof(AVIHeader), 1, current_file.handle);
+  current_file.frame_count = 0;
+  current_file.start = esp_timer_get_time();
+  current_file.size = sizeof(AVIHeader);
+  #ifdef SDMMC_AVI_HAS_INDEX
+  current_file.has_index = true;
+  #else
+  current_file.has_index = false;
+  #endif 
+  
+  const auto [it, success2] = active_avi_processes.insert({path, current_file});
+  if(success2 != true){
+    ESP_LOGE(TAG, "Failed to insert process into process map");
+    return ESP_FAIL;
+  }
+  
+  if(current_file.async){
     BaseType_t created =  xTaskCreate(avi_process, "Avi Task", 4 * 1024, &active_avi_processes[path], tskIDLE_PRIORITY + 2, &current_file.task);
     if (created != pdPASS){
       ESP_LOGE(TAG,"Failed to create .avi task");
@@ -534,43 +526,86 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
   BaseType_t sent;
 
   if (active_avi_processes.find(path) == active_avi_processes.end()){
-    esp_err_t err = initialise_avi_process(path, len, data);
+    esp_err_t err = initialise_avi_process(path, len, data, true);
     if (err != ESP_OK){
       ESP_LOGE(TAG, "Failed to initialise avi process");
       return err;
     }
   }
   current_file = &active_avi_processes[path];
-  if (len == 0){
-    frame_image_t qi = {0, NULL};
-    sent = xQueueSend(current_file->queue, (void*) &qi , portMAX_DELAY);
-  } else {
-    if (uxQueueSpacesAvailable(current_file->queue ) > 0){
-      if (len > current_file->buffer_len){
-        if (current_file->buffer_len == 0){
-          current_file->buffer = heap_caps_malloc(len * 1.2, MALLOC_CAP_SPIRAM);
 
-        }else{
-          current_file->buffer = heap_caps_realloc(current_file->buffer, len * 1.2, MALLOC_CAP_SPIRAM);
-        }
-        if (current_file->buffer == NULL){
-          ESP_LOGE(TAG, "Failed to allocate memory for avi buffer");
-          current_file->buffer_len = 0;
-          return ESP_FAIL;
-        }else{
-          current_file->buffer_len = len * 1.2;
-        }
-      }
-
-      memcpy(current_file->buffer, data, len);
-      frame_image_t qi = {len, current_file->buffer};
-      sent = xQueueSend(current_file->queue, &qi, 0);
-      if (sent != pdPASS){
-        ESP_LOGE(TAG, "Failed to send item to queue!");
-      } 
+  if (current_file->async){
+    if (len == 0){
+      frame_image_t qi = {0, NULL};
+      sent = xQueueSend(current_file->queue, (void*) &qi , portMAX_DELAY);
     } else {
-      ESP_LOGW(TAG, "No space on Queue... Dropping frame");
+      if (uxQueueSpacesAvailable(current_file->queue ) > 0){
+        if (len > current_file->buffer_len){
+          if (current_file->buffer_len == 0){
+            current_file->buffer = heap_caps_malloc(len * 1.2, MALLOC_CAP_SPIRAM);
+          }else{
+            current_file->buffer = heap_caps_realloc(current_file->buffer, len * 1.2, MALLOC_CAP_SPIRAM);
+          }
+          if (current_file->buffer == NULL){
+            ESP_LOGE(TAG, "Failed to allocate memory for avi buffer");
+            current_file->buffer_len = 0;
+            return ESP_FAIL;
+          }else{
+            current_file->buffer_len = len * 1.2;
+          }
+        }
+
+        memcpy(current_file->buffer, data, len);
+        frame_image_t qi = {len, current_file->buffer};
+        sent = xQueueSend(current_file->queue, &qi, 0);
+        if (sent != pdPASS){
+          ESP_LOGE(TAG, "Failed to send item to queue!");
+        } 
+      } else {
+        ESP_LOGW(TAG, "No space on Queue... Dropping frame");
+      }
     }
+  } else {
+    if (len == 0){
+      finalise_avi_process(current_file);
+    }else{
+      if (!current_file->initialised){
+        uint16_t width, height;
+        esp_err_t dim = get_dimensions(data, len, &width, &height);
+        if (dim != ESP_OK){
+          ESP_LOGE(TAG, "JPG dimensions Not Found");
+        }
+        current_file->header.dwWidth = width;
+        current_file->header.dwHeight = height;
+        current_file->header.dwStrh.rcFrame = {0, 0, width, height};
+        current_file->header.dwStrf.biWidth = width;
+        current_file->header.dwStrf.biHeight = height;
+        current_file->header.dwStrf.biSizeImage = (uint32_t)width * height * current_file->header.dwStrf.biBitCount / 8;
+      }
+      int pad = 2 - (len % 2);
+      MOVIHeader movi = { {'0','0','d','c'}, len + pad};
+      
+      fwrite(&movi, sizeof(MOVIHeader), 1, current_file->handle);
+
+      fwrite(data, len, 1, current_file->handle);
+
+      fwrite(&padding, pad, 1, current_file->handle);
+
+  #ifdef SDMMC_AVI_HAS_INDEX
+      _avioldindex_entry item;
+      item.dwChunkId = {'0', '0', 'd', 'c'} ;
+      item.dwFlags = 16;
+      item.dwOffset = current_file->size;
+      item.dwSize = len;
+      current_file->entries.push_back(item);
+  #endif
+
+      if (len + pad  > current_file->header.dwSuggestedBufferSize)
+        current_file->header.dwSuggestedBufferSize = len + pad;
+      current_file->frame_count++;
+      current_file->size += (len + sizeof(MOVIHeader) + pad);
+      current_file->header.dwMoviSize += (len + sizeof(MOVIHeader) + pad);
+    }   
   }
   return ESP_OK;
 }

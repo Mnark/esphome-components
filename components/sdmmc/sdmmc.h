@@ -19,9 +19,18 @@
 #include "hal/gpio_types.h"
 #include "ff.h"
 
+//#define SDMMC_AVI_HAS_INDEX 
+
 typedef struct {
 char fourcc [4];
 } FOURCC;
+
+
+typedef struct{
+  char ckID[4];
+  uint32_t ckSize;
+  char ckData[4];
+} AVIChunk;
 
 typedef struct tagRECT {
   uint16_t left;
@@ -44,7 +53,7 @@ typedef struct _avioldindex {
 
 typedef struct {
   FOURCC fccType;
-  FOURCC fccHandler;
+  char fccHandler[4];
   DWORD  dwFlags;
   WORD   wPriority;
   WORD   wLanguage;
@@ -74,7 +83,7 @@ typedef struct tagBITMAPINFOHEADER {
 } BITMAPINFOHEADER, *LPBITMAPINFOHEADER, *PBITMAPINFOHEADER;
 
 typedef struct {
-  DWORD dwRIFF;
+  char dwRIFF[4];
   DWORD dwFileSize;
   DWORD daAVI;
   FOURCC fccList;
@@ -110,11 +119,12 @@ typedef struct {
 
   DWORD dwMoviList;
   DWORD dwMoviSize;
+  char dwMoviID[4];
 } AVIHeader;
 
 typedef struct {
-  DWORD dwFourCC;
-  DWORD dwMoviType;
+//  char dwFourCC [4];
+  char dwMoviType[4];
   DWORD dwSize;
 } MOVIHeader;
 
@@ -123,6 +133,7 @@ struct {
   std::string key;
   std::string filename;
   bool initialised = false;
+  bool async;
   int size;
   int frame_count;
   int width;
@@ -131,6 +142,7 @@ struct {
   int64_t start;
   AVIHeader header;
   AVIOLDINDEX index;
+  bool has_index = false;
   std::vector<_avioldindex_entry> entries;
   FILE *handle;
   QueueHandle_t queue = NULL;
@@ -138,6 +150,44 @@ struct {
   void * buffer;
   TaskHandle_t task;
 }current_file_t;
+
+const AVIHeader default_header = {
+    .dwRIFF = {'R','I','F','F'},
+    .daAVI = 541677121,
+    .fccList = {'L','I','S','T'},
+    .dwSize = 68 + sizeof(AVIStreamHeader) + sizeof(BITMAPINFOHEADER) + 28,
+    .fccHdrl = {'h','d','r','l'},
+    .dwAvih = 1751742049,
+    .dwAvihSize = 56,
+  #ifdef SDMMC_AVI_HAS_INDEX
+    .dwFlags = 16, 
+  #else
+    .dwFlags = 0,
+  #endif
+    .dwStreams = 1,
+    .dwStrlList= {'L','I','S','T'},
+    .dwStrlSize = sizeof(AVIStreamHeader) + sizeof(BITMAPINFOHEADER) + 20,
+    .dwStrl = {'s','t','r','l'},
+    .fccStrh = {'s','t','r','h'},
+    .dwStrhSize = sizeof(AVIStreamHeader),
+    .dwStrh = {
+      .fccType ={'v','i','d','s'},
+      .fccHandler = {'M','J','P','G'},
+      .dwScale = 100000,
+      .dwRate = 1000000, 
+      .dwQuality = 10000,
+    },  
+    .fccStrf = {'s','t','r','f'},
+    .dwStrfSize = sizeof(BITMAPINFOHEADER),
+    .dwStrf = {
+      .biSize = 40,
+      .biPlanes = 1,
+      .biBitCount = 24,
+      .biCompression = {'M','J','P','G'},
+    },
+    .dwMoviList = 1414744396,
+    .dwMoviID = {'m','o','v','i'}
+  };
 
 namespace esphome {
 namespace sdmmc {
@@ -166,7 +216,7 @@ class SDMMC : public Component, public EntityBase  { // ,
   State get_state(void);
   esp_err_t write_file(const char *path, uint32_t len, void *data);
   esp_err_t write_file(const char *path, uint32_t len, std::vector<uint8_t> &data);
-  esp_err_t write_avi(const char *path, uint32_t len, void *data);
+  esp_err_t write_avi(const char*, uint32_t, void*);
   uint64_t get_total_capacity(void);
   uint64_t get_used_capacity(void);
   uint64_t get_free_capacity(void);
@@ -175,7 +225,7 @@ class SDMMC : public Component, public EntityBase  { // ,
 
  protected:
   void set_state_(State state);
-  esp_err_t initialise_avi_process(const char *fullpath, uint32_t len, void *data );
+  esp_err_t initialise_avi_process(const char *fullpath, uint32_t len, void *data, bool );
 
   sdmmc_card_t *card;
   gpio_num_t command_pin;

@@ -2,6 +2,20 @@
 
 This component allows an SD Card to be shared via the WebDav protocol to other computers in the local network. It is dependant on the sdmmc component to mount the card onto the local file system. It provides a very basic level of security (which can be disabled).
 
+## Configuration variables
+
+* **port** (Required, integer): Port number to host the webdav server.
+* **sdmmc** (Required, sdmmc id); Id of the SD Card to be hosted.
+* **auth**
+* **user**
+* **password**
+* **enable_web**
+* **web_directory**
+* **home_page**
+* **camera** (Optional, camera id): Id of the camera if web hosting is enabled.
+* **video_directory**
+* **share_name**
+
 ## Configuration
 
 ```yaml
