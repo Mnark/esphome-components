@@ -42,5 +42,36 @@ std::string Request::getDestination() {
 
         return destination.substr(pos + host.length());
 }
+        std::string Request::getHeader(std::string name) {
+                size_t len = httpd_req_get_hdr_value_len(req, name.c_str());
+                if (len <= 0)
+                        return "";
+
+                std::string s;
+                s.resize(len);
+                httpd_req_get_hdr_value_str(req, name.c_str(), &s[0], len+1);
+
+                return s;
+        }
+
+        size_t Request::getContentLength() {
+                if (!req)
+                        return 0;
+
+                return req->content_len;
+        }
+
+        int Request::readBody(char *buf, int len)  {
+                int ret = httpd_req_recv(req, buf, len);
+                if (ret == HTTPD_SOCK_ERR_TIMEOUT)
+                        /* Retry receiving if timeout occurred */
+                        return 0;
+
+                return ret;
+        }
+
+        httpd_req_t *Request::get_httpd_req(void){
+                return req;
+        }
 
 }

@@ -36,15 +36,17 @@ public:
         int doUnlock(Request &req, Response &resp);
         void setAuth(int auth_level);
         std::string get_auth_credentials();
+        webdav::WebDav *get_webdav(void);
         //XMLDocument respXML;
         int auth = 0;
+        std::string formatTime(time_t t);
+        std::string formatTimeTxt(time_t t);
+        std::string formatTimeETag(time_t t);
 
 private:
         std::string rootPath, rootURI;
 
-        std::string formatTime(time_t t);
-        std::string formatTimeTxt(time_t t);
-        std::string formatTimeETag(time_t t);
+
         int sendPropResponse(Response &resp, std::string path, int recurse);
         int xmlPropResponse(XMLDocument *respXML, XMLElement *oRoot, std::string path, int recurse);
         

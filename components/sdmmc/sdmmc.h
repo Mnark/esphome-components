@@ -6,6 +6,9 @@
 #include "esphome/core/entity_base.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/defines.h"
+
+#include "esphome/core/component.h"
+#include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include <stdio.h>
 #include <string.h>
@@ -128,8 +131,7 @@ typedef struct {
   DWORD dwSize;
 } MOVIHeader;
 
-typedef
-struct {
+typedef struct {
   std::string key;
   std::string filename;
   bool initialised = false;
@@ -187,7 +189,7 @@ const AVIHeader default_header = {
     },
     .dwMoviList = 1414744396,
     .dwMoviID = {'m','o','v','i'}
-  };
+};
 
 namespace esphome {
 namespace sdmmc {
@@ -199,11 +201,12 @@ enum class State {
   BUSY,
 };
 
-class SDMMC : public Component, public EntityBase  { // ,
+class SDMMC : public PollingComponent {//public Component, public EntityBase  { // ,
  public:
   /* public API (derivated) */
   void setup() override;
-  void loop() override;
+  //void loop() override;
+  void update() override;
   void dump_config() override;
   float get_setup_priority() const override;
   void set_command_pin(int pin);
@@ -220,11 +223,13 @@ class SDMMC : public Component, public EntityBase  { // ,
   uint64_t get_total_capacity(void);
   uint64_t get_used_capacity(void);
   uint64_t get_free_capacity(void);
+  void set_card_sensor(text_sensor::TextSensor *card_sensor) { this->card_sensor_ = card_sensor; }
+
   std::string card_status;
   char *info;
 
  protected:
-  void set_state_(State state);
+  void set_state(State state);
   esp_err_t initialise_avi_process(const char *fullpath, uint32_t len, void *data, bool );
 
   sdmmc_card_t *card;
@@ -234,6 +239,8 @@ class SDMMC : public Component, public EntityBase  { // ,
   int num_data_pins_;
   std::string mount_point_;
   State state_{State::UNKNOWN};
+  State last_state_{State::UNKNOWN};
+  text_sensor::TextSensor *card_sensor_{nullptr};
 };
 
 template<typename... Ts> class SDMMCWriteAction : public Action<Ts...> {

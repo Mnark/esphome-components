@@ -18,6 +18,8 @@
 #include "sdmmc_cmd.h"
 #include "esphome/core/log.h"
 #include "esp_timer.h"
+#include "esphome/core/component.h"
+#include "esphome/components/sensor/sensor.h"
 #include "sdmmc.h"
 
 std::map<std::string, current_file_t> active_avi_processes;
@@ -64,18 +66,18 @@ static esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16
   return ESP_OK;
 }
 
-static const LogString *sdmmc_state_to_string(State state) {
+static const char *sdmmc_state_to_string(State state) {
   switch (state) {
     case State::UNKNOWN:
-      return LOG_STR("UNKNOWN"); 
+      return "Unknown"; 
     case State::UNAVAILABLE:
-      return LOG_STR("UNAVAILABLE");
+      return "Unavailable";
     case State::IDLE:
-      return LOG_STR("IDLE");
+      return "Idle";
     case State::BUSY:
-      return LOG_STR("BUSY");
+      return "Busy";
     default:
-      return LOG_STR("UNKNOWN");
+      return "Unknown";
   }
 };
 
@@ -132,16 +134,19 @@ void SDMMC::setup() {
         esp_err_to_name(ret));
     }
     card_status = "Not Detected";
-    this->set_state_(State::UNAVAILABLE);
+    this->set_state(State::UNAVAILABLE);
     return;
   }
 
-  this->set_state_(State::IDLE);
+  this->set_state(State::IDLE);
   card_status = "Card Detected";
   return;
 }
 
-void SDMMC::loop(void) {}
+void  SDMMC::update() {
+  card_sensor_->publish_state(sdmmc_state_to_string(this->state_));
+}
+//void SDMMC::loop(void) {}
 
 void SDMMC::dump_config() {
   ESP_LOGCONFIG(TAG, "SDMMC:");
@@ -149,7 +154,7 @@ void SDMMC::dump_config() {
   ESP_LOGCONFIG(TAG, " Clock Pin: %d", clock_pin);
   ESP_LOGCONFIG(TAG, " Mode: %d pin", this->num_data_pins_);
   ESP_LOGCONFIG(TAG, " Data Pin: %d", data_pins[0]);
-  ESP_LOGCONFIG(TAG, " Card Status: %s ", LOG_STR_ARG(sdmmc_state_to_string(this->state_)));
+  ESP_LOGCONFIG(TAG, " Card Status: %s ", sdmmc_state_to_string(this->state_));
   if (this->state_ == (State::IDLE)){
     ESP_LOGCONFIG(TAG, " Card Name: %s ", card->cid.name);
     if (card->real_freq_khz == 0) {
@@ -168,11 +173,12 @@ void SDMMC::dump_config() {
 
 float SDMMC::get_setup_priority() const { return setup_priority::HARDWARE; }
 
-void SDMMC::set_state_(State state) {
-  State old_state = this->state_;
-  this->state_ = state;
-  ESP_LOGD(TAG, "State changed from %s to %s", LOG_STR_ARG(sdmmc_state_to_string(old_state)),
-           LOG_STR_ARG(sdmmc_state_to_string(state)));
+void SDMMC::set_state(State state) {
+  state_ = state;
+  if (state_ != last_state_){
+    card_sensor_->publish_state(sdmmc_state_to_string(state_));
+    last_state_ = state_;
+  }
 }
 
 State SDMMC::get_state(void){
@@ -270,18 +276,18 @@ static void write_file_async(void *arg){
 
 static esp_err_t finalise_avi_process(current_file_t *current_file) {
 
-#ifdef SDMMC_AVI_HAS_INDEX
-    current_file->index.fcc = {'i','d','x','1'};
-    current_file->index.cb = current_file->entries.size() * sizeof(_avioldindex_entry); 
-    fwrite(&current_file->index, sizeof(AVIOLDINDEX), 1, current_file->handle);
-    current_file->size += sizeof(AVIOLDINDEX);
+  #ifdef SDMMC_AVI_HAS_INDEX
+      current_file->index.fcc = {'i','d','x','1'};
+      current_file->index.cb = current_file->entries.size() * sizeof(_avioldindex_entry); 
+      fwrite(&current_file->index, sizeof(AVIOLDINDEX), 1, current_file->handle);
+      current_file->size += sizeof(AVIOLDINDEX);
 
-    for(_avioldindex_entry& e : current_file->entries)
-    {
-      fwrite(&e, sizeof(_avioldindex_entry), 1, current_file->handle);
-      current_file->size += sizeof(_avioldindex_entry);
-    }
-#endif
+      for(_avioldindex_entry& e : current_file->entries)
+      {
+        fwrite(&e, sizeof(_avioldindex_entry), 1, current_file->handle);
+        current_file->size += sizeof(_avioldindex_entry);
+      }
+  #endif
     //pad the file so that it is a multiple of 8 bytes
     if (current_file->size % 8 > 0){
       int pad = 8 - (current_file->size % 8);
@@ -351,14 +357,14 @@ static void avi_process(void *arg){
 
       fwrite(&padding, pad, 1, current_file->handle);
 
-#ifdef SDMMC_AVI_HAS_INDEX
-      _avioldindex_entry item;
-      item.dwChunkId = {'0', '0', 'd', 'c'} ;
-      item.dwFlags = 16;
-      item.dwOffset = current_file->size;
-      item.dwSize = current_image.length;
-      current_file->entries.push_back(item);
-#endif
+  #ifdef SDMMC_AVI_HAS_INDEX
+        _avioldindex_entry item;
+        item.dwChunkId = {'0', '0', 'd', 'c'} ;
+        item.dwFlags = 16;
+        item.dwOffset = current_file->size;
+        item.dwSize = current_image.length;
+        current_file->entries.push_back(item);
+  #endif
       if (current_image.length + pad  > current_file->header.dwSuggestedBufferSize)
         current_file->header.dwSuggestedBufferSize = current_image.length + pad;
       current_file->frame_count = current_file->frame_count+1;
@@ -483,6 +489,7 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
     ESP_LOGE(TAG, "Failed to open file %s for writing", fullpath);
     return ESP_FAIL;
   }
+  set_state(State::BUSY);
   if(current_file.async){
     current_file.queue = xQueueCreate(1, sizeof(frame_image_t));
     if (current_file.queue == NULL){
@@ -538,6 +545,7 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
     if (len == 0){
       frame_image_t qi = {0, NULL};
       sent = xQueueSend(current_file->queue, (void*) &qi , portMAX_DELAY);
+      set_state(State::IDLE);
     } else {
       if (uxQueueSpacesAvailable(current_file->queue ) > 0){
         if (len > current_file->buffer_len){
@@ -568,6 +576,7 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
   } else {
     if (len == 0){
       finalise_avi_process(current_file);
+      set_state(State::IDLE);
     }else{
       if (!current_file->initialised){
         uint16_t width, height;

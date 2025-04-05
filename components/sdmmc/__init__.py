@@ -8,6 +8,7 @@ from esphome.const import (
     CONF_DATA_PIN,
     CONF_LENGTH,
     CONF_DATA,
+    CONF_NAME,
 )
 from esphome.core import CORE
 from esphome.components import sensor, text_sensor
@@ -15,28 +16,22 @@ from esphome.cpp_helpers import setup_entity
 from esphome.components import esp32
 
 CODEOWNERS = ["@mnark"]
-AUTO_LOAD = ["text_sensor"]
+AUTO_LOAD = ["text_sensor", "sensor"]
 
 sdmmc_ns = cg.esphome_ns.namespace("sdmmc")
-SDMMC = sdmmc_ns.class_("SDMMC", cg.Component, text_sensor.TextSensor) 
+SDMMC = sdmmc_ns.class_("SDMMC", cg.PollingComponent)
 SDMMCWriteAction = sdmmc_ns.class_("SDMMCWriteAction", auto.Action)
 SDMMCAppendAction = sdmmc_ns.class_("SDMMCAppendAction", auto.Action)
 
 CONF_COMMAND_PIN = "command_pin"
 CONF_SDMMC = "sdmmc"
-CONF_SDMMC_ID = "sdmmc_id"
+#CONF_SDMMC_ID = "sdmmc_id"
 CONF_PATH = "path"
 CONF_FILENAME = "filename"
 ICON_MICRO_SD = "mdi:micro-sd"
 CONF_DIAGNOSTIC = "diagnostics"
-CONF_TEXT_SENSOR = "text"
 CONF_MOUNT_POINT = "mount_point"
-
-SETTERS = {
-    CONF_COMMAND_PIN: "set_command_pin",
-    CONF_CLOCK_PIN: "set_clock_pin",
-    CONF_DATA_PIN: "set_data_pin",
-}
+CONF_CARD_SENSOR = "card_sensor"
 
 def validate_raw_data(value):
     if isinstance(value, str):
@@ -49,9 +44,10 @@ def validate_raw_data(value):
         "data must either be a string wrapped in quotes or a list of bytes"
     )
 
-CONFIG_SCHEMA = cv.ENTITY_BASE_SCHEMA.extend (
+CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(SDMMC),
+        #cv.GenerateID(CONF_SDMMC_ID): cv.declare_id(text_sensor.TextSensor),
         cv.Required(CONF_COMMAND_PIN): pins.internal_gpio_input_pin_number,
         cv.Required(CONF_CLOCK_PIN): pins.internal_gpio_input_pin_number,
         cv.Required(CONF_DATA_PIN): cv.All(
@@ -59,16 +55,27 @@ CONFIG_SCHEMA = cv.ENTITY_BASE_SCHEMA.extend (
             cv.Length(min=1, max=4),  # Must be 1 or 4 pins
         ),
         cv.Optional(CONF_MOUNT_POINT, default="sdcard"): cv.string,
+        cv.Optional(CONF_NAME, default="SD Card"): cv.string,
+        
+        cv.Optional(
+            CONF_CARD_SENSOR,
+            default={
+                CONF_NAME: "SD Card",
+            }): text_sensor.text_sensor_schema(
+            icon=ICON_MICRO_SD,
+        ),
     }
-).extend(cv.COMPONENT_SCHEMA)
+).extend(cv.polling_component_schema("60s"))
 
 async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LONG_FILENAMES","y")
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_MAX_LFN","255")
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LFN_HEAP","y")
     
+    #var = await sensor.new_sensor(config)
+    #await cg.register_component(var, config) 
     var = cg.new_Pvariable(config[CONF_ID])
-    await setup_entity(var, config)
+    #await setup_entity(var, config)
     await cg.register_component(var, config)
 
     cg.add(var.set_command_pin(config[CONF_COMMAND_PIN]))
@@ -83,12 +90,9 @@ async def to_code(config):
 
     cg.add(var.set_mount_point(config[CONF_MOUNT_POINT]))
 
-    # for key, setter in SETTERS.items():
-    #     if key in config:
-    #         cg.add(getattr(var, setter)(config[key]))
+    card_sensor = await text_sensor.new_text_sensor(config.get(CONF_CARD_SENSOR))
+    cg.add(var.set_card_sensor(card_sensor))
     
-    # cg.add(var.set_mount_point(config[CONF_MOUNT_POINT]))
-  
     cg.add_define("USE_SDMMC")
 
 @auto.register_action(

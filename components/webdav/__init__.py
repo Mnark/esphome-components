@@ -3,7 +3,7 @@ import esphome.codegen as cg
 from esphome.const import CONF_ID, CONF_PORT, CONF_AUTH, CONF_PASSWORD
 from esphome.components import esp32
 from ..esp32_camera import ESP32Camera
-from ..sdmmc import CONF_SDMMC, SDMMC, CONF_SDMMC_ID
+from ..sdmmc import CONF_SDMMC, SDMMC
 import base64
 
 CODEOWNERS = ["@mnark"]
@@ -15,9 +15,11 @@ CONF_CAMERA = "camera"
 CONF_USER = "user"
 CONF_WEB_ENABLED = "enable_web"
 CONF_WEB_DIR = "web_directory"
+CONF_SNAPSHOT = "snapshot_directory"
+CONF_VIDEO = "video_directory"
 
 webdav_ns = cg.esphome_ns.namespace("webdav")
-WebDav = webdav_ns.class_("WebDav", cg.Component)
+WebDav = webdav_ns.class_("WebDav", cg.PollingComponent)
 WebDavAuthentication = webdav_ns.enum("WebDavAuthentication")
 
 ENUM_AUTHENTICATION = {
@@ -32,10 +34,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_PORT): cv.port,
         cv.Required(CONF_SDMMC): cv.use_id(SDMMC),
         cv.Optional(CONF_CAMERA): cv.use_id(ESP32Camera),
+        cv.Optional(CONF_SNAPSHOT, default="pictures"): cv.string,
+        cv.Optional(CONF_VIDEO, default="videos"): cv.string,
         cv.Optional(CONF_AUTH, default="NONE"): cv.enum(
             ENUM_AUTHENTICATION, upper=True
         ),
-        cv.Optional(CONF_WEB_ENABLED, default=False): cv.boolean,
+        cv.Optional(CONF_WEB_ENABLED, default=True): cv.boolean,
         cv.Optional(CONF_WEB_DIR, default="www"): cv.string,        
         cv.Optional(CONF_HOME_PAGE, default="default.htm"): cv.string,
         cv.Optional(CONF_SHARE_NAME, default="share"): cv.string,
@@ -43,7 +47,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_USER): cv.string,
         cv.Optional(CONF_PASSWORD): cv.string,
     }
-).extend(cv.COMPONENT_SCHEMA)
+).extend(cv.polling_component_schema("60s"))
+#).extend(cv.COMPONENT_SCHEMA)
 
 # Validation function to enforce user/pass when auth is BASIC
 def validate_auth(value):
@@ -56,11 +61,9 @@ def validate_auth(value):
             raise cv.Invalid("'user' and 'password' should not be set when AUTH is 'NONE'.")
     return value
 
-# Apply validation
 CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, validate_auth)
 
 async def to_code(config):
-    #print (config)
     cg.add_library(
         name="tinyxml2",
         repository="https://github.com/leethomason/tinyxml2",
@@ -83,6 +86,7 @@ async def to_code(config):
     cg.add(server.set_web_enabled(config[CONF_WEB_ENABLED]))
     if config[CONF_WEB_ENABLED] == True:
         cg.add_define("WEBDAV_ENABLE_WEBSERVER")
+        esp32.add_idf_sdkconfig_option("CONFIG_HTTPD_WS_SUPPORT",True)
         cg.add_library(
             name="tiny-json",
             repository="https://github.com/rafagafe/tiny-json",
@@ -95,5 +99,7 @@ async def to_code(config):
         print("Camera configured")
         cg.add_define("WEBDAV_ENABLE_CAMERA")
         camera = await cg.get_variable(config.get(CONF_CAMERA))
-        cg.add(server.set_camera(camera))    
+        cg.add(server.set_camera(camera))
+        cg.add(server.set_snapshot_directory(config[CONF_SNAPSHOT]))
+        cg.add(server.set_video_directory(config[CONF_VIDEO]))   
     await cg.register_component(server, config)

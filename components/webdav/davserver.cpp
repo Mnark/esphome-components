@@ -12,6 +12,7 @@
 //#include "esp_netif.h"
 #include <esp_http_server.h>
 
+
 #include "file-utils.h"
 #include "davserver.h"
 #include "esp_log.h"
@@ -145,6 +146,63 @@ static esp_err_t send_unauthorized_response(httpd_req_t *req)
         return ESP_FAIL;
 }
 
+esp_err_t chunk_file_send(struct httpd_req *req){
+        //ESP_LOGI("async", "Sending chunked file send");
+        webdav::DavServer *davserver = (webdav::DavServer *)req->user_ctx;
+        webdav::WebDav *server = davserver->get_webdav();
+        
+        //std::string path = server->get_mount_point() + req->uri;
+        std::string path = davserver->uriToPath(req->uri);
+        ESP_LOGI(TAG, "Path: %s", path.c_str());
+        struct stat sb;
+        int ret = stat(path.c_str(), &sb);
+
+        FILE *f = fopen(path.c_str(), "r");
+        if (!f)
+                return ESP_FAIL;
+        esp_err_t res = httpd_resp_set_status(req, "200 OK");
+        std::string etag = server->formatTimeETag(sb.st_mtime);
+        std::string lmod = server->formatTime(sb.st_mtime);
+        res = httpd_resp_set_hdr(req, "Content-Length", std::to_string(sb.st_size).c_str());
+        if (res == ESP_OK)
+        {
+                std::string etag = davserver->formatTimeETag(sb.st_mtime);
+                res = httpd_resp_set_hdr(req, "ETag",  etag.c_str());        
+        }
+        if (res == ESP_OK)
+        {
+                res = httpd_resp_set_hdr(req, "Last-Modified", lmod.c_str());        
+        }
+        if (res == ESP_OK)
+        {
+                res = httpd_resp_set_type(req, get_content_type_from_file(path.c_str()));
+        }
+
+        ret = 0;
+
+        const int chunkSize = 16 * 1024;
+        char *chunk = (char *) malloc(chunkSize);
+        for (;;) {
+                size_t r = fread(chunk, 1, chunkSize, f);
+                if (r <= 0)
+                        break;
+                if (httpd_resp_send_chunk(req, chunk, r) != ESP_OK)
+                {
+                        fclose(f);
+                        free(chunk);
+                        ESP_LOGE(TAG, "File sending failed!");
+                        httpd_resp_sendstr_chunk(req, NULL);
+                        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
+                        return ESP_FAIL;
+                }
+        }
+
+        free(chunk);
+        fclose(f);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+}
+
 esp_err_t webdav_handler(httpd_req_t *httpd_req)
 {
     webdav::DavServer *server = (webdav::DavServer *)httpd_req->user_ctx;
@@ -176,7 +234,8 @@ esp_err_t webdav_handler(httpd_req_t *httpd_req)
     }
 
 
-    webdav::RequestEspIdf req(httpd_req, httpd_req->uri);
+    //webdav::RequestEspIdf req(httpd_req, httpd_req->uri);
+    webdav::Request req(httpd_req, httpd_req->uri);
     webdav::ResponseEspIdf resp(httpd_req);
     int ret;
 
@@ -193,7 +252,7 @@ esp_err_t webdav_handler(httpd_req_t *httpd_req)
     // httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "*");
     // httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "*");
 
-    ESP_LOGI(TAG, "%s: >%s<", http_method_str((enum http_method)httpd_req->method), httpd_req->uri);
+    //ESP_LOGI(TAG, "%s: >%s<", http_method_str((enum http_method)httpd_req->method), httpd_req->uri);
 
     switch (httpd_req->method)
     {
@@ -239,24 +298,28 @@ esp_err_t webdav_handler(httpd_req_t *httpd_req)
         break;
     }
 
-    if (ret == 404){
-        resp.setStatus(ret, "Not Found");
-    } else {
-        if (ret == 304) {
+    switch (ret){
+        case 404:
+                resp.setStatus(ret, "Not Found");
+                break;
+        case 304:
                 resp.setStatus(ret, "Not Modified");
-        }else{
+                break;
+        case 0:
+                return ESP_OK;
+                break;        
+        default:
                 resp.setStatus(ret, "");
-        }
     }
-    //resp.writeHeader("Connection", "close");
+
     resp.flushHeaders();
     resp.closeBody();
-    //httpd_resp_set_hdr(req, "Connection", "close");
     
     if (ret < 300 || ret == 304 || ret == 404)
     {
         return ESP_OK;
-    } 
+    }
+    ESP_LOGW(TAG, "Dav handler returned %d", ret); 
     return ret;
 }
 
@@ -276,6 +339,10 @@ static time_t parseDateTime(const char* datetimeString, const char* format)
         ESP_LOGE(TAG,"Could not extract datetime from string %s", datetimeString);
     }
     return mktime(&tmStruct);
+}
+
+webdav::WebDav*  DavServer::get_webdav(void){
+        return this->webdav_;
 }
 
 void DavServer::register_server(httpd_handle_t server)
@@ -387,54 +454,6 @@ static void xmlElementstr(std::ostringstream &s, const char *name, const char *v
                 s << "<" << name << ">" << value << "</" << name << ">";
         }
 }
-
-// void DavServer::sendMultiStatusResponse(Response &resp, MultiStatusResponse &msr) {
-//         std::ostringstream s;
-
-//         s << "<D:response>";
-//         xmlElementstr(s, "D:href", msr.href.c_str());
-//         xmlElementstr(s, "D:status", msr.status.c_str());
- 
-//         if (msr.path == "/") {
-//                 s << "<D:propstat><D:prop>";
-//                 xmlElementstr(s, "D:quota-available-bytes",  std::to_string(msr.quota_available_bytes).c_str());
-//                 xmlElementstr(s, "D:quota-used-bytes",  std::to_string(msr.quota_used_bytes).c_str());
-//                 // s << "<D:quota-available-bytes>1000000</D:quota-available-bytes>";
-//                 // s << "<D:quota-used-bytes>10000</D:quota-used-bytes>";
-//                 s << "</D:prop></D:propstat>";              
-//         }else{
-//                 s << "<D:propstat><D:prop>";
-
-//                 for (const auto &p: msr.props)
-//                         xmlElementstr(s, p.first.c_str(), p.second.c_str());
-
-//                 xmlElementstr(s, "D:resourcetype", msr.isCollection ? "<D:collection/>" : "");
-//                 // s << "<D:supportedlock>";
-//                 // s << "<D:lockentry>";
-//                 // s << "<D:lockscope>";
-//                 // s << "<D:exclusive/>";
-//                 // s << "</D:lockscope>";
-//                 // s << "<D:locktype>";        
-//                 // s << "<D:write/>";
-//                 // s << "</D:locktype>";
-//                 // s << "</D:lockentry>";
-//                 // s << "<D:lockentry>";
-//                 // s << "<D:lockscope>";
-//                 // s << "<D:shared/>";
-//                 // s << "</D:lockscope>";
-//                 // s << "<D:locktype>";
-//                 // s << "<D:write/>";
-//                 // s << "</D:locktype>";
-//                 // s << "</D:lockentry>";
-//                 // s << "</D:supportedlock>";
-
-//                 s << "</D:prop>";
-//                 s << "</D:propstat></D:response>";
-
-//         }
-
-//         resp.sendChunk(s.str().c_str());
-// }
 
 int  DavServer::sendRootPropResponse(Response &resp) {
         //using namespace tinyxml2;
@@ -594,79 +613,6 @@ int DavServer::xmlPropResponse(XMLDocument *respXML, XMLElement *oRoot, std::str
         return 0;
 }
 
-// int DavServer::sendPropResponse(Response &resp, std::string path, int recurse) {
-//         struct stat sb;
-
-//         int ret = stat(uriToPath(path).c_str(), &sb);
-//         if (ret < 0){
-//                 ESP_LOGE(TAG,"sendPropResponse stat failed Error: %d ErrNo: %d", ret, -errno);
-//                 return -errno;
-//         }
-
-//         std::string uri = uriToPath(path);
-
-//         MultiStatusResponse r;
-
-//         r.href = path;          
-
-//         r.path = path;
-//         r.status = "HTTP/1.1 200 OK",
-//         r.quota_available_bytes = this->sdmmc_->get_free_capacity();
-//         r.quota_used_bytes = this->sdmmc_->get_used_capacity();
-
-//         r.props["D:getlastmodified"] = formatTimeTxt(sb.st_mtime);
-        
-//         r.props["D:displayname"] = basename(path.c_str());
-//         //r.props["D:creationdate"] = formatTimeTxt(sb.st_ctime);
-//         //r.props["D:creationdate"] = formatTime(sb.st_ctime);
-//         if (sb.st_ctime == 0){
-//                 r.props["D:creationdate"] = formatTime(sb.st_mtime);
-//         }else{
-//                 r.props["D:creationdate"] = formatTime(sb.st_ctime);
-//         }
-//         r.props["D:ishidden"] = "0";
-//         r.props["D:getcontentlanguage"] = "";
-//         //r.props["D:lockdiscovery"] = "";
-
-//         r.isCollection = ((sb.st_mode & S_IFMT) == S_IFDIR);
-
-//         if (!r.isCollection) {
-//                 r.props["D:getcontentlength"] = std::to_string(sb.st_size);
-//                 r.props["D:getcontenttype"] = get_content_type_from_file(basename(path.c_str()));
-//                 //r.props["D:getcontenttype"] = "application/binary";
-//                 r.props["D:getetag"] = formatTimeETag(sb.st_mtime);
-//                 r.props["D:iscollection"] = "0";
-//         } else {
-//                 r.props["D:getcontentlength"] = "0";
-//                 r.props["D:getcontenttype"] = "";
-//                 r.props["D:iscollection"] = "1";
-//                 r.props["D:getetag"] = "";    
-//         }
-
-//         sendMultiStatusResponse(resp, r);
-
-//         if (r.isCollection && recurse > 0) {
-//                 DIR *dir = opendir(uri.c_str());
-//                 //DIR *dir = opendir(path.c_str());
-//                 if (dir) {
-//                         struct dirent *de;
-
-//                         while ((de = readdir(dir))) {
-//                                 if (strcmp(de->d_name, ".") == 0 ||
-//                                     strcmp(de->d_name, "..") == 0)
-//                                         continue;
-
-//                                 std::string rpath = path + "/" + de->d_name;
-//                                 sendPropResponse(resp, rpath, recurse-1);
-//                         }
-
-//                         closedir(dir);
-//                 }
-//         }
-
-//         return 0;
-// }
-
 int DavServer::doCopy(Request &req, Response &resp) {
         if (req.getDestination().empty())
                 return 400;
@@ -721,15 +667,10 @@ int DavServer::doDelete(Request &req, Response &resp) {
 }
 
 int DavServer::doGet(Request &req, Response &resp) {
-
+        httpd_req * http_req = req.get_httpd_req();
+        webdav::WebDav *server = (webdav::WebDav *)req.get_httpd_req()->user_ctx;
         std::string translate = req.getHeader("translate");
         std::string mod_since = req.getHeader("If-Modified-Since"); 
-        ESP_LOGI(TAG,"Get request for %s translate %s", 
-                this->uriToPath(req.getPath()).c_str(), 
-                translate.c_str());
-        ESP_LOGI(TAG,"Get request for %s mod-since %s", 
-                this->uriToPath(req.getPath()).c_str(), 
-                mod_since.c_str());
         struct stat sb;
         int ret = stat(uriToPath(req.getPath()).c_str(), &sb);
         if (ret < 0)
@@ -744,42 +685,41 @@ int DavServer::doGet(Request &req, Response &resp) {
                 }
         }        
 
+        if (sb.st_size > 16 * 1024){
+                if (server->queue_request(req.get_httpd_req(), chunk_file_send) == ESP_OK) {
+                        return 0;
+                } else {
+                        httpd_resp_set_status(req.get_httpd_req(), "503 Busy");
+                        httpd_resp_sendstr(req.get_httpd_req(), "<div> no workers available. server busy.</div>");
+                        return 0;
+                }               
+        } else {
 
-        FILE *f = fopen(uriToPath(req.getPath()).c_str(), "r");
-        if (!f)
-                return 500;
+                FILE *f = fopen(uriToPath(req.getPath()).c_str(), "r");
+                if (!f)
+                        return 500;
 
-        resp.setHeader("Content-Length", sb.st_size);
-        resp.setHeader("ETag", sb.st_ino);
-        resp.setHeader("Last-Modified", formatTime(sb.st_mtime));
-        resp.setHeader("Content-Type", get_content_type_from_file(this->uriToPath(req.getPath()).c_str()));
+                resp.setHeader("Content-Length", sb.st_size);
+                resp.setHeader("ETag", sb.st_ino);
+                resp.setHeader("Last-Modified", formatTime(sb.st_mtime));
+                resp.setHeader("Content-Type", get_content_type_from_file(this->uriToPath(req.getPath()).c_str()));
 
-        // resp.flush();
+                char *chunk = (char *) malloc(sb.st_size);
 
-        ret = 0;
+                size_t r = fread(chunk, 1, sb.st_size, f);
+                httpd_resp_send(req.get_httpd_req(), chunk, r);
+                //ret = resp.sendChunk(chunk, r);
 
-        const int chunkSize = 16384;
-        char *chunk = (char *) malloc(chunkSize);
+                free(chunk);
+                fclose(f);
+                //resp.closeChunk();
 
-        for (;;) {
-                size_t r = fread(chunk, 1, chunkSize, f);
-                if (r <= 0)
-                        break;
+                //if (ret == 0)
+                       // return 200;
 
-                if (!resp.sendChunk(chunk, r)) {
-                        ret = -1;
-                        break;
-                }
+
         }
-
-        free(chunk);
-        fclose(f);
-        resp.closeChunk();
-
-        if (ret == 0)
-                return 200;
-
-        return 500;
+        return 200;
 }
 
 int DavServer::doHead(Request &req, Response &resp) {
@@ -974,10 +914,10 @@ int DavServer::doProppatch(Request &req, Response &resp) {
 
                 tinyxml2::XMLError xerr = reqXML.Parse( inbody, bodyLength );
                 if (xerr != tinyxml2::XML_SUCCESS){
-                        ESP_LOGE(TAG, "Failed to Parse Proppatchrequest body");
+                        ESP_LOGE(TAG, "Failed to Parse Proppatch request body");
                         resp.setStatus(500, "Failed to Parse Proppatch request body");      
                 } else {
-                        ESP_LOGI(TAG, "Body parsed succesfully" );  
+                        //ESP_LOGI(TAG, "Body parsed succesfully" );  
                 }
                 tinyxml2::XMLDocument respXML;
 
@@ -1010,7 +950,7 @@ int DavServer::doProppatch(Request &req, Response &resp) {
                 respXML.InsertFirstChild(respXML.NewDeclaration());
                 tinyxml2::XMLPrinter printer;
                 respXML.Accept( &printer );
-                ESP_LOGI(TAG, "Output: %s", printer.CStr());
+                //ESP_LOGI(TAG, "Output: %s", printer.CStr());
                 resp.setStatus(200, "OK");
                 resp.setContentType("text/xml; charset=\"utf-8\"");
                 resp.sendChunk( printer.CStr());
