@@ -2,7 +2,6 @@
 
 This component allows an SD Card to be shared via the WebDav protocol to other computers in the local network. It is dependant on the sdmmc component to mount the card onto the local file system. It provides a very basic level of security (which can be disabled).
 
-
 | :warning: WARNING                                       |
 |:--------------------------------------------------------|
 | This component requires ESP-IDF version 5.2.0 or above. |
@@ -61,7 +60,7 @@ webdav:
 
 ## Usage
 
-#### Example
+### Example
 
 ```yaml
 
@@ -84,5 +83,3 @@ webdav:
   password: !secret webdav_password
 
 ```
-
-

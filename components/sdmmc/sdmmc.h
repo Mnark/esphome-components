@@ -166,6 +166,7 @@ const AVIHeader default_header = {
   #else
     .dwFlags = 0,
   #endif
+    .dwInitialFrames = 1,
     .dwStreams = 1,
     .dwStrlList= {'L','I','S','T'},
     .dwStrlSize = sizeof(AVIStreamHeader) + sizeof(BITMAPINFOHEADER) + 20,
@@ -175,7 +176,7 @@ const AVIHeader default_header = {
     .dwStrh = {
       .fccType ={'v','i','d','s'},
       .fccHandler = {'M','J','P','G'},
-      .dwScale = 100000,
+      .dwScale =30,
       .dwRate = 1000000, 
       .dwQuality = 10000,
     },  
@@ -205,7 +206,6 @@ class SDMMC : public PollingComponent {//public Component, public EntityBase  { 
  public:
   /* public API (derivated) */
   void setup() override;
-  //void loop() override;
   void update() override;
   void dump_config() override;
   float get_setup_priority() const override;
@@ -224,14 +224,19 @@ class SDMMC : public PollingComponent {//public Component, public EntityBase  { 
   uint64_t get_used_capacity(void);
   uint64_t get_free_capacity(void);
   void set_card_sensor(text_sensor::TextSensor *card_sensor) { this->card_sensor_ = card_sensor; }
+  //FILE*create_file(char * , const char *, bool );
 
-  std::string card_status;
   char *info;
 
  protected:
   void set_state(State state);
+  static const char *sdmmc_state_to_string(State state);
   esp_err_t initialise_avi_process(const char *fullpath, uint32_t len, void *data, bool );
+  static esp_err_t finalise_avi_process(current_file_t *current_file);
 
+  static void write_file_async(void *arg);
+  static void avi_process(void *arg);
+  //esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16_t *height);
   sdmmc_card_t *card;
   gpio_num_t command_pin;
   gpio_num_t clock_pin;

@@ -25,10 +25,9 @@
 std::map<std::string, current_file_t> active_avi_processes;
 
 uint64_t padding = 0;
-  //std::vector<std::string, current_file_t> in_process_files;
 
 typedef struct {
-  const char *fullpath;
+  char *fullpath;
   uint32_t len;
   void *data;
 }write_file_args_t;
@@ -45,7 +44,7 @@ namespace sdmmc {
 
 static const char *TAG = "SDMMC";
 
-static esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16_t *height){
+esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16_t *height){
   char * image = (char *) image_v;
   int iPos = 0;
 
@@ -66,7 +65,7 @@ static esp_err_t get_dimensions(void * image_v, int len, uint16_t *width, uint16
   return ESP_OK;
 }
 
-static const char *sdmmc_state_to_string(State state) {
+const char *SDMMC::sdmmc_state_to_string(State state) {
   switch (state) {
     case State::UNKNOWN:
       return "Unknown"; 
@@ -118,7 +117,7 @@ void SDMMC::setup() {
   esp_vfs_fat_sdmmc_mount_config_t mount_config = {
       .format_if_mount_failed = true, 
       .max_files = 5, 
-      .allocation_unit_size = 4 * 1024};
+      .allocation_unit_size = 16 * 1024};
   
   esp_err_t ret;
 
@@ -133,20 +132,20 @@ void SDMMC::setup() {
         "Make sure SD card lines have pull-up resistors in place.",
         esp_err_to_name(ret));
     }
-    card_status = "Not Detected";
     this->set_state(State::UNAVAILABLE);
     return;
   }
 
   this->set_state(State::IDLE);
-  card_status = "Card Detected";
   return;
 }
 
 void  SDMMC::update() {
-  card_sensor_->publish_state(sdmmc_state_to_string(this->state_));
+  if (state_ != last_state_){
+    card_sensor_->publish_state(sdmmc_state_to_string(state_));    
+    last_state_ = state_;
+  }
 }
-//void SDMMC::loop(void) {}
 
 void SDMMC::dump_config() {
   ESP_LOGCONFIG(TAG, "SDMMC:");
@@ -171,7 +170,9 @@ void SDMMC::dump_config() {
   }
 }
 
-float SDMMC::get_setup_priority() const { return setup_priority::HARDWARE; }
+float SDMMC::get_setup_priority() const {
+  return setup_priority::HARDWARE; 
+}
 
 void SDMMC::set_state(State state) {
   state_ = state;
@@ -258,15 +259,87 @@ esp_err_t SDMMC::path_to_uri(const char *path, char *uri, bool create_dir){
   return ESP_OK;
 }
 
-static void write_file_async(void *arg){
-  write_file_args_t *args = (write_file_args_t *)arg;
+FILE* create_file(char * fullpath, const char *permission, bool create_directory){
+  const char s[2] = "/";
+  char *token;
+  char *partpath;
+  char *startpath;
+  DIR* dir;
+  struct stat st = {};
+  int status;
+  
+  int ret = stat(fullpath, &st);
+  if (ret == 0){
+    int version = 0;
+    char *newpath = new char[64];
+    strcat(fullpath, "\0");
+    char *extPtr = strrchr(fullpath, '.');
+    char startStr[64];
+    strncpy(startStr, fullpath, strlen(fullpath) - strlen(extPtr));
+    startStr[strlen(fullpath) - strlen(extPtr)] = 0;
+    while (ret == 0){
+      version++;
+      sprintf (newpath, "%s(%d)%s", startStr, version, extPtr);
+      ret = stat(newpath, &st);
+    }
+    strcpy(fullpath, newpath);
+  }
 
-  FILE *f = fopen(args->fullpath, "wb");
+  FILE *f = fopen(fullpath, permission);
+  if (f != NULL) {
+    return f;
+  }
+  if (create_directory == false){
+    return NULL;
+  }
+
+  partpath = (char *)calloc(1, strlen(fullpath));
+  startpath = (char *)calloc(1, strlen(fullpath));
+  strcpy(startpath, fullpath);
+  
+  token = strtok(startpath, s);
+  while( token != NULL ) {
+    strcat(partpath, "/");
+    strcat(partpath, token);
+    if (strcmp(fullpath, partpath) == 0){
+      break;
+    }
+    dir = opendir(partpath);
+    if (dir) {
+      closedir(dir);
+    } else if (ENOENT == errno) {
+      status = mkdir(partpath, 0777);
+      if (status != 0){
+        ESP_LOGE(TAG, "Failed to create directory: %s", partpath );
+      } else {
+        ESP_LOGI(TAG, "Created directory: %s", partpath );
+      }
+
+    } else {
+      ESP_LOGE(TAG, "Failed to open directory: %s", partpath );
+    }
+    token = strtok(NULL, s);
+  }
+
+  free (partpath);
+  free (startpath);
+
+  f = fopen(fullpath, permission);
+  if (f != NULL) {
+    return f;
+  }
+  return NULL;
+}
+
+void SDMMC::write_file_async(void *arg){
+  write_file_args_t *args = (write_file_args_t *)arg;
+  FILE *f = create_file(args->fullpath, "wb", true);
+  //FILE *f = fopen(args->fullpath, "wb");
   if (f == NULL) {
     ESP_LOGE(TAG, "Failed to open file %s for writing", args->fullpath);
     return;
   }
-  fwrite(args->data, args->len, 1, f);
+  fwrite(args->data, 1, args->len, f);
   ESP_LOGI("async_write", "File %s saved", args->fullpath);
   fclose(f);
   free(args->data);
@@ -274,24 +347,28 @@ static void write_file_async(void *arg){
   return;
 }
 
-static esp_err_t finalise_avi_process(current_file_t *current_file) {
-
+esp_err_t SDMMC::finalise_avi_process(current_file_t *current_file) {
+  
+  int64_t time_now = esp_timer_get_time();
+  int64_t elapsed_time = time_now - current_file->start;
+  ESP_LOGI(TAG,"Video time %llu", elapsed_time);
+  
   #ifdef SDMMC_AVI_HAS_INDEX
       current_file->index.fcc = {'i','d','x','1'};
       current_file->index.cb = current_file->entries.size() * sizeof(_avioldindex_entry); 
-      fwrite(&current_file->index, sizeof(AVIOLDINDEX), 1, current_file->handle);
+      fwrite(&current_file->index, 1, sizeof(AVIOLDINDEX), current_file->handle);
       current_file->size += sizeof(AVIOLDINDEX);
 
       for(_avioldindex_entry& e : current_file->entries)
       {
-        fwrite(&e, sizeof(_avioldindex_entry), 1, current_file->handle);
+        fwrite(&e, 1, sizeof(_avioldindex_entry), current_file->handle);
         current_file->size += sizeof(_avioldindex_entry);
       }
   #endif
     //pad the file so that it is a multiple of 8 bytes
     if (current_file->size % 8 > 0){
       int pad = 8 - (current_file->size % 8);
-      fwrite(&padding, pad, 1, current_file->handle);
+      fwrite(&padding, 1, pad, current_file->handle);
       current_file->size += pad;
     }
     
@@ -300,16 +377,19 @@ static esp_err_t finalise_avi_process(current_file_t *current_file) {
     
     current_file->header.dwFileSize  = current_file->size  - 8 ;
   
-    int64_t time_now = esp_timer_get_time();
-    int64_t elapsed_time = time_now - current_file->start; 
+ 
     current_file->header.dwMicroSecPerFrame = elapsed_time / current_file->frame_count;
 
     current_file->header.dwMaxBytesPerSec = current_file->header.dwWidth * current_file->header.dwHeight * (1000000 / current_file->header.dwMicroSecPerFrame) * 1.5;
     current_file->header.dwTotalFrames = current_file->frame_count;
     current_file->header.dwStrh.dwSuggestedBufferSize = current_file->header.dwSuggestedBufferSize;
     current_file->header.dwStrh.dwRate = (uint32_t)((uint64_t)current_file->header.dwStrh.dwScale * current_file->frame_count * 1000000 / elapsed_time)  ;
-    current_file->header.dwStrh.dwLength =  current_file->header.dwStrh.dwRate * current_file->frame_count / 100000;
-    fwrite(&current_file->header, sizeof(AVIHeader), 1, current_file->handle);
+    
+     ESP_LOGI(TAG, "Scale: %d Rate: %d",current_file->header.dwStrh.dwScale,current_file->header.dwStrh.dwRate );
+     current_file->header.dwStrh.dwLength =   current_file->header.dwStrh.dwRate * elapsed_time / (1000000 * current_file->header.dwStrh.dwScale) ;
+    //current_file->header.dwStrh.dwLength =  (uint32_t)elapsed_time / current_file->header.dwStrh.dwScale;
+   
+    fwrite(&current_file->header, 1, sizeof(AVIHeader), current_file->handle);
 
     fclose(current_file->handle);
     ESP_LOGI(TAG, "File %s complete. Frame count: %d Time: %llu secs",
@@ -326,9 +406,10 @@ static esp_err_t finalise_avi_process(current_file_t *current_file) {
     return ESP_OK;
 }
 
-static void avi_process(void *arg){
+void SDMMC::avi_process(void *arg){
   current_file_t *current_file = (current_file_t *)arg;
   frame_image_t  current_image;
+  static const char *TAG = "SDMMC_AVI";
   
   while ( true ){
     if (xQueuePeek(current_file->queue, &current_image, 0) == pdPASS){
@@ -349,13 +430,12 @@ static void avi_process(void *arg){
         current_file->header.dwStrf.biHeight = height;
         current_file->header.dwStrf.biSizeImage = (uint32_t)width * height * current_file->header.dwStrf.biBitCount / 8;
       }
-      int pad = 4 - (current_image.length % 4);
-      MOVIHeader movi = { {'0','0','d','c'}, current_image.length + pad};
-      fwrite(&movi, sizeof(MOVIHeader), 1, current_file->handle);
-
-      fwrite(current_image.data, current_image.length, 1, current_file->handle);
-
-      fwrite(&padding, pad, 1, current_file->handle);
+      
+      MOVIHeader movi = { {'0','0','d','c'}, current_image.length};
+      current_image.length += current_image.length % 2;
+      fwrite(&movi, 1, sizeof(MOVIHeader), current_file->handle);
+      fwrite(current_image.data, 1, current_image.length, current_file->handle);
+      //fwrite(&padding, 1, pad, current_file->handle);
 
   #ifdef SDMMC_AVI_HAS_INDEX
         _avioldindex_entry item;
@@ -365,11 +445,11 @@ static void avi_process(void *arg){
         item.dwSize = current_image.length;
         current_file->entries.push_back(item);
   #endif
-      if (current_image.length + pad  > current_file->header.dwSuggestedBufferSize)
-        current_file->header.dwSuggestedBufferSize = current_image.length + pad;
-      current_file->frame_count = current_file->frame_count+1;
-      current_file->size += (current_image.length + sizeof(MOVIHeader) + pad);
-      current_file->header.dwMoviSize += (current_image.length + sizeof(MOVIHeader) + pad);
+      if (current_image.length  > current_file->header.dwSuggestedBufferSize)
+        current_file->header.dwSuggestedBufferSize = current_image.length;
+      current_file->frame_count ++;
+      current_file->size += (current_image.length + sizeof(MOVIHeader));
+      current_file->header.dwMoviSize += (current_image.length + sizeof(MOVIHeader));
       xQueueReceive(current_file->queue, &current_image, 10);
     }
     vTaskDelay(1);
@@ -390,23 +470,7 @@ esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
   if (err != ESP_OK){
     return err;
   }
-  int ret = stat(fullpath, &st);
-  if (ret == 0){
-    int version = 0;
-    char *newpath = new char[64];
-    strcat(fullpath, "\0");
-    char *extPtr = strrchr(fullpath, '.');
-    char startStr[64];
-    strncpy(startStr, fullpath, strlen(fullpath) - strlen(extPtr));
-    startStr[strlen(fullpath) - strlen(extPtr)] = 0;
-    while (ret == 0){
-      version++;
-      sprintf (newpath, "%s(%d)%s", startStr, version, extPtr);
-      ret = stat(newpath, &st);
-    }
-    strcpy(fullpath, newpath);
-  }
-  
+
   if (!save_sync){
     uint32_t* mem_image = (uint32_t*) malloc(len);
     
@@ -422,7 +486,7 @@ esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
         .data = mem_image
       };
 
-      BaseType_t xReturned = xTaskCreate( write_file_async, "write_file_async", 2048, (void *)&args, tskIDLE_PRIORITY + 1, NULL );
+      BaseType_t xReturned = xTaskCreate( write_file_async, "write_file_async", 3072, (void *)&args, tskIDLE_PRIORITY + 1, NULL );
       if (xReturned != pdPASS){
         ESP_LOGW(TAG, "Failed to create async task. Saving Synchronusly");
         free(mem_image);
@@ -434,12 +498,13 @@ esp_err_t SDMMC::write_file(const char *path, uint32_t len, void *data) {
   
   if (save_sync){
     uint64_t start = esp_timer_get_time();
-    FILE *f = fopen(fullpath, "wb");
+    //FILE *f = fopen(fullpath, "wb");
+    FILE *f = create_file(fullpath, "wb", true);
     if (f == NULL) {
       ESP_LOGE(TAG, "Failed to open file %s for writing", path);
       return ESP_FAIL;
     }
-    fwrite(data, len, 1, f);
+    fwrite(data, 1, len, f);
     uint8_t *imagedata = (uint8_t *) data;
     fclose(f);
     uint64_t end = esp_timer_get_time();
@@ -465,26 +530,10 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
   if (err != ESP_OK){
     return err;
   }
-  int ret = stat(fullpath, &st);
-  
-  if (ret == 0){
-    int version = 0;
-    char *newpath = new char[64];
-    strcat(fullpath, "\0");
-    char *extPtr = strrchr(fullpath, '.');
-    char startStr[64];
-    strncpy(startStr, fullpath, strlen(fullpath) - strlen(extPtr));
-    startStr[strlen(fullpath) - strlen(extPtr)] = 0;
-    while (ret == 0){
-      version++;
-      sprintf (newpath, "%s(%d)%s", startStr, version, extPtr);
-      ret = stat(newpath, &st);
-    }
-    strcpy(fullpath, newpath);
-  }
 
   current_file.async = write_async;
-  current_file.handle = fopen(fullpath, "ab");
+  current_file.handle  = create_file(fullpath, "wb", true);
+  //current_file.handle = fopen(fullpath, "ab");
   if (current_file.handle == NULL) {
     ESP_LOGE(TAG, "Failed to open file %s for writing", fullpath);
     return ESP_FAIL;
@@ -502,7 +551,7 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
   current_file.buffer_len = 0;
   current_file.header = default_header;
 
-  fwrite(&current_file.header, sizeof(AVIHeader), 1, current_file.handle);
+  fwrite(&current_file.header, 1, sizeof(AVIHeader), current_file.handle);
   current_file.frame_count = 0;
   current_file.start = esp_timer_get_time();
   current_file.size = sizeof(AVIHeader);
@@ -519,7 +568,7 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
   }
   
   if(current_file.async){
-    BaseType_t created =  xTaskCreate(avi_process, "Avi Task", 4 * 1024, &active_avi_processes[path], tskIDLE_PRIORITY + 2, &current_file.task);
+    BaseType_t created =  xTaskCreate(avi_process, "Avi Task", 4 * 1024, &active_avi_processes[path], tskIDLE_PRIORITY + 6, &current_file.task);
     if (created != pdPASS){
       ESP_LOGE(TAG,"Failed to create .avi task");
       return ESP_FAIL;
@@ -531,7 +580,9 @@ esp_err_t SDMMC::initialise_avi_process(const char *path, uint32_t len, void *da
 esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
   current_file_t *current_file;
   BaseType_t sent;
-
+  frame_image_t qi;
+  //int64_t time_now = esp_timer_get_time();
+  
   if (active_avi_processes.find(path) == active_avi_processes.end()){
     esp_err_t err = initialise_avi_process(path, len, data, true);
     if (err != ESP_OK){
@@ -540,10 +591,12 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
     }
   }
   current_file = &active_avi_processes[path];
+  // int64_t elapsed_time = esp_timer_get_time() - time_now;
+  // ESP_LOGI(TAG,"Time to check existance %llu", elapsed_time);
 
   if (current_file->async){
     if (len == 0){
-      frame_image_t qi = {0, NULL};
+      qi = {0, NULL};
       sent = xQueueSend(current_file->queue, (void*) &qi , portMAX_DELAY);
       set_state(State::IDLE);
     } else {
@@ -564,7 +617,7 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
         }
 
         memcpy(current_file->buffer, data, len);
-        frame_image_t qi = {len, current_file->buffer};
+        qi = {len, current_file->buffer};
         sent = xQueueSend(current_file->queue, &qi, 0);
         if (sent != pdPASS){
           ESP_LOGE(TAG, "Failed to send item to queue!");
@@ -594,11 +647,11 @@ esp_err_t SDMMC::write_avi(const char *path, uint32_t len, void *data) {
       int pad = 2 - (len % 2);
       MOVIHeader movi = { {'0','0','d','c'}, len + pad};
       
-      fwrite(&movi, sizeof(MOVIHeader), 1, current_file->handle);
+      fwrite(&movi, 1, sizeof(MOVIHeader), current_file->handle);
 
-      fwrite(data, len, 1, current_file->handle);
+      fwrite(data, 1, len, current_file->handle);
 
-      fwrite(&padding, pad, 1, current_file->handle);
+      fwrite(&padding, 1, pad, current_file->handle);
 
   #ifdef SDMMC_AVI_HAS_INDEX
       _avioldindex_entry item;

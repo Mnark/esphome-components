@@ -68,14 +68,11 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.polling_component_schema("60s"))
 
 async def to_code(config):
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LONG_FILENAMES","y")
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_MAX_LFN","255")
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LFN_HEAP","y")
+    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LONG_FILENAMES",True)
+    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_MAX_LFN",255)
+    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LFN_STACK",True)
     
-    #var = await sensor.new_sensor(config)
-    #await cg.register_component(var, config) 
     var = cg.new_Pvariable(config[CONF_ID])
-    #await setup_entity(var, config)
     await cg.register_component(var, config)
 
     cg.add(var.set_command_pin(config[CONF_COMMAND_PIN]))
