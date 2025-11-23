@@ -12,7 +12,10 @@ from esphome.const import (
 )
 from esphome.core import CORE
 from esphome.components import sensor, text_sensor
-from esphome.cpp_helpers import setup_entity
+try:
+    from esphome.cpp_helpers import setup_entity
+except ImportError:
+    pass
 from esphome.components import esp32
 
 CODEOWNERS = ["@mnark"]
