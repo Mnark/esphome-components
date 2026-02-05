@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/file.h>
+#include <map>
 #include "soc/soc_caps.h"
 #include "hal/gpio_types.h"
 #include "driver/gpio.h"
