@@ -15,6 +15,7 @@
 #include <sys/unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <map>
 #include "esp_err.h"
 #include "esp_log.h"
 #include "driver/sdmmc_types.h"
