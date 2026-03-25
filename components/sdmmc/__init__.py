@@ -74,6 +74,7 @@ async def to_code(config):
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LONG_FILENAMES",True)
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_MAX_LFN",255)
     esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LFN_STACK",True)
+    esp32.include_builtin_idf_component("fatfs")
     
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
