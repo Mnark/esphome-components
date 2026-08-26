@@ -11,38 +11,44 @@ from esphome.const import (
     CONF_NAME,
 )
 from esphome.core import CORE
+from esphome.schema_extractors import SCHEMA_EXTRACT, schema_extractor
 from esphome.components import sensor, text_sensor
-try:
-    from esphome.cpp_helpers import setup_entity
-except ImportError:
-    pass
+#from esphome.cpp_helpers import setup_entity
 from esphome.components import esp32
 
 CODEOWNERS = ["@mnark"]
 AUTO_LOAD = ["text_sensor", "sensor"]
+DEPENDENCIES = ["esp32"]
 
 sdmmc_ns = cg.esphome_ns.namespace("sdmmc")
 SDMMC = sdmmc_ns.class_("SDMMC", cg.PollingComponent)
 SDMMCWriteAction = sdmmc_ns.class_("SDMMCWriteAction", auto.Action)
 SDMMCAppendAction = sdmmc_ns.class_("SDMMCAppendAction", auto.Action)
+SDMMCStopAppendAction = sdmmc_ns.class_("SDMMCStopAppendAction", auto.Action)
 
 CONF_COMMAND_PIN = "command_pin"
 CONF_SDMMC = "sdmmc"
 #CONF_SDMMC_ID = "sdmmc_id"
 CONF_PATH = "path"
 CONF_FILENAME = "filename"
-ICON_MICRO_SD = "mdi:micro-sd"
+ICON_DISK_DRIVE = "mdi:harddisk"
 CONF_DIAGNOSTIC = "diagnostics"
 CONF_MOUNT_POINT = "mount_point"
 CONF_CARD_SENSOR = "card_sensor"
 
+RAW_DATA_SCHEMA = cv.Any(
+    cv.string_strict,
+    cv.Schema([cv.hex_uint8_t]),
+)
+
+@schema_extractor("schema")
 def validate_raw_data(value):
+    if value is SCHEMA_EXTRACT:
+        return RAW_DATA_SCHEMA
     if isinstance(value, str):
         return value.encode("utf-8")
-    if isinstance(value, str):
-        return value
     if isinstance(value, list):
-        return cv.Schema([cv.hex_uint8_t])(value)
+        return RAW_DATA_SCHEMA(value)
     raise cv.Invalid(
         "data must either be a string wrapped in quotes or a list of bytes"
     )
@@ -57,25 +63,35 @@ CONFIG_SCHEMA = cv.Schema(
             cv.ensure_list(pins.internal_gpio_input_pin_number),  # Allow a list
             cv.Length(min=1, max=4),  # Must be 1 or 4 pins
         ),
-        cv.Optional(CONF_MOUNT_POINT, default="sdcard"): cv.string,
-        cv.Optional(CONF_NAME, default="SD Card"): cv.string,
+        cv.Optional(
+            CONF_MOUNT_POINT,
+            default="sdcard",
+            visibility=cv.Visibility.UI,
+        ): cv.string_strict,
+        cv.Optional(
+            CONF_NAME,
+            default="SD Card",
+            visibility=cv.Visibility.UI,
+        ): cv.string_strict,
         
         cv.Optional(
             CONF_CARD_SENSOR,
             default={
                 CONF_NAME: "SD Card",
-            }): text_sensor.text_sensor_schema(
-            icon=ICON_MICRO_SD,
+            },
+            visibility=cv.Visibility.ADVANCED,
+        ): text_sensor.text_sensor_schema(
+            icon=ICON_DISK_DRIVE,
         ),
     }
-).extend(cv.polling_component_schema("60s"))
+).extend(
+    cv.polling_component_schema("60s", visibility=cv.Visibility.ADVANCED)
+)
 
 async def to_code(config):
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LONG_FILENAMES",True)
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_MAX_LFN",255)
-    esp32.add_idf_sdkconfig_option("CONFIG_FATFS_LFN_STACK",True)
+    esp32.require_fatfs()
+    esp32.require_vfs_dir()
     esp32.include_builtin_idf_component("fatfs")
-    
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
@@ -107,6 +123,7 @@ async def to_code(config):
             cv.Required(CONF_DATA): cv.templatable(validate_raw_data), 
         }
     ),
+    synchronous=False,
 )
 async def sdmmc_save_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
@@ -142,6 +159,7 @@ async def sdmmc_save_to_code(config, action_id, template_arg, args):
             cv.Required(CONF_DATA): cv.templatable(validate_raw_data), 
         }
     ),
+    synchronous=False,
 )
 async def sdmmc_append_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
@@ -164,4 +182,22 @@ async def sdmmc_append_to_code(config, action_id, template_arg, args):
             data = [int(x) for x in data]
         cg.add(var.set_data_static(data))
 
+    return var
+
+@auto.register_action(
+    "sdmmc.stop_append",
+    SDMMCStopAppendAction,
+    cv.Schema(
+        {
+            cv.Required(CONF_ID): cv.use_id(SDMMC),
+            cv.Required(CONF_FILENAME): cv.templatable(cv.string),
+        }
+    ),
+    synchronous=False,
+)
+async def sdmmc_stop_append_to_code(config, action_id, template_arg, args):
+    paren = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, paren)
+    template_ = await cg.templatable(config[CONF_FILENAME], args, cg.std_string)
+    cg.add(var.set_filename(template_))
     return var

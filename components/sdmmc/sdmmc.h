@@ -148,8 +148,9 @@ typedef struct {
   std::vector<_avioldindex_entry> entries;
   FILE *handle;
   QueueHandle_t queue = NULL;
-  int buffer_len;
-  void * buffer;
+  QueueHandle_t free_buffers = NULL;
+  size_t buffer_lengths[3] = {};
+  void *buffers[3] = {};
   TaskHandle_t task;
 }current_file_t;
 
@@ -304,10 +305,13 @@ template<typename... Ts> class SDMMCAppendAction : public Action<Ts...> {
   void play(Ts... x) override {
     this->path_ = this->filename_.value(x...).c_str();
     if (this->static_) {
-      ESP_LOGI("TEMP", "this is static");
-      this->sdmmc_->write_avi(this->path_, this->length_.value(x...), this->data_static_);
+      const auto length = this->length_.value(x...);
+      if (length > this->data_static_.size()) {
+        ESP_LOGE("SDMMC", "Append length exceeds data size");
+        return;
+      }
+      this->sdmmc_->write_avi(this->path_, length, this->data_static_.data());
     } else {
-      ESP_LOGI("TEMP", "this is NOT static");
       auto val = this->data_func_int_(x...);
       this->sdmmc_->write_avi(this->path_, this->length_.value(x...), val);
       }
@@ -320,6 +324,22 @@ template<typename... Ts> class SDMMCAppendAction : public Action<Ts...> {
   bool static_{false};
   std::function<uint8_t*(Ts...)> data_func_int_{};
   std::vector<uint8_t> data_static_{};
+};
+
+template<typename... Ts> class SDMMCStopAppendAction : public Action<Ts...> {
+ public:
+  SDMMCStopAppendAction(SDMMC *sdmmc) : sdmmc_(sdmmc) {}
+
+  TEMPLATABLE_VALUE(std::string, filename)
+
+  void play(Ts... x) override {
+    this->path_ = this->filename_.value(x...).c_str();
+    this->sdmmc_->write_avi(this->path_, 0, nullptr);
+  }
+
+ protected:
+  SDMMC *sdmmc_;
+  const char *path_;
 };
 
 }  // namespace sdmmc
